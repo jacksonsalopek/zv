@@ -6,6 +6,7 @@ A Zig port of libev with better memory safety and a smaller footprint. zv provid
 
 - **[API Documentation](./docs/README.md)** - Complete API reference and guides
 - **[Benchmarks](./docs/benchmarks/README.md)** - Performance comparison with libev
+- **[Security](./docs/SECURITY.md)** - Security considerations and limitations
 - **[Examples](./examples/)** - Usage examples (see below for running)
 
 ## Examples
