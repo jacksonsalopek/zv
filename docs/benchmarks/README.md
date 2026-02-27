@@ -64,39 +64,39 @@ The benchmarks are integrated into `build.zig` as a separate build step that:
 ## What Each Benchmark Measures
 
 ### 1. Loop Throughput
-- **Empty loop**: Baseline iteration speed with no watchers
-- **Idle IO watchers**: 100 registered but inactive file descriptors
-- **Active timers**: 50 timers with different deadlines
+- **Empty loop**: 500,000 iterations with no watchers
+- **Idle IO watchers**: 1,000 registered but inactive file descriptors (50k iterations)
+- **Active timers**: 100 timers with different deadlines (10k iterations)
 
-**Key Metric**: Iterations per second
+**Key Metric**: Iterations per second, statistical validity through high iteration counts
 
 ### 2. IO Operations
-- **Add**: Creating and registering 1000 IO watchers
-- **Modify**: Changing events (read/write) on 1000 watchers
-- **Remove**: Unregistering 1000 watchers
+- **Add**: Creating and registering 5,000 IO watchers
+- **Modify**: Changing events (read/write) on 5,000 watchers (20 modifications each)
+- **Remove**: Unregistering 5,000 watchers
 
-**Key Metrics**: Time per operation, memory allocations
+**Key Metrics**: Time per operation, memory allocations, scalability
 
 ### 3. Timer Accuracy
-- **Creation**: Overhead of creating and starting 1000 timers
+- **Creation**: Overhead of creating and starting 5,000 timers
 - **Latency**: How accurately timers fire (100 samples of 10ms timers)
-- **Repeating**: Performance with 10 repeating timers over 1000 iterations
+- **Repeating**: Performance with 10 repeating timers over 5,000 iterations
 
-**Key Metrics**: Creation overhead, average firing latency
+**Key Metrics**: Creation overhead, average firing latency, scalability
 
 ### 4. Memory Usage
 - **Loop initialization**: Base memory footprint
-- **IO watchers**: Memory per watcher (100 watchers)
-- **Timer watchers**: Memory per timer (100 timers)
-- **Mixed workload**: 50 IO + 50 timer watchers
+- **IO watchers**: Memory per watcher (1,000 watchers)
+- **Timer watchers**: Memory per timer (1,000 timers)
+- **Mixed workload**: 500 IO + 500 timer watchers
 
-**Key Metrics**: Allocations, bytes allocated, peak memory
+**Key Metrics**: Allocations, bytes allocated, peak memory at scale
 
 ### 5. Scaling
-- **IO scaling**: Throughput with 10, 50, 100, 500, 1000 watchers
-- **Timer scaling**: Throughput with 10, 50, 100, 250, 500 timers
+- **IO scaling**: Throughput with 10, 50, 100, 500, 1000, 2000, 5000, 10000 watchers (50k iterations each)
+- **Timer scaling**: Throughput with 10, 50, 100, 250, 500, 1000, 2500, 5000 timers (5k iterations each)
 
-**Key Metrics**: Performance ratio at each scale, degradation trend
+**Key Metrics**: Performance ratio at each scale, degradation trends at extreme loads
 
 ## Implementation Highlights
 

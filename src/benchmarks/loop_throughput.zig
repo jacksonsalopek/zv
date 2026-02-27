@@ -35,7 +35,7 @@ pub fn run(allocator: std.mem.Allocator, writer: anytype) !void {
 }
 
 fn benchmarkEmptyLoop(allocator: std.mem.Allocator, writer: anytype) !void {
-    const iterations: usize = 100_000;
+    const iterations: usize = 500_000;
 
     const zv_result = try benchmarkZvEmpty(allocator, iterations);
     const libev_result = try benchmarkLibevEmpty(iterations);
@@ -92,8 +92,8 @@ fn benchmarkLibevEmpty(iterations: usize) !Result {
 }
 
 fn benchmarkIdleWatchers(allocator: std.mem.Allocator, writer: anytype) !void {
-    const iterations: usize = 10_000;
-    const num_watchers: usize = 100;
+    const iterations: usize = 50_000;
+    const num_watchers: usize = 1000;
 
     const zv_result = try benchmarkZvIdleWatchers(allocator, iterations, num_watchers);
     const libev_result = try benchmarkLibevIdleWatchers(iterations, num_watchers);
@@ -141,7 +141,7 @@ fn benchmarkZvIdleWatchers(allocator: std.mem.Allocator, iterations: usize, num_
     const throughput = @as(f64, @floatFromInt(iterations)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0);
 
     return Result{
-        .name = "zv (100 idle watchers)",
+        .name = "zv (1000 idle watchers)",
         .time_ns = elapsed,
         .iterations = iterations,
         .throughput = throughput,
@@ -191,7 +191,7 @@ fn benchmarkLibevIdleWatchers(iterations: usize, num_watchers: usize) !Result {
     const throughput = @as(f64, @floatFromInt(iterations)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0);
 
     return Result{
-        .name = "libev (100 idle watchers)",
+        .name = "libev (1000 idle watchers)",
         .time_ns = elapsed,
         .iterations = iterations,
         .throughput = throughput,
@@ -201,8 +201,8 @@ fn benchmarkLibevIdleWatchers(iterations: usize, num_watchers: usize) !Result {
 fn libevDummyCallback(_: ?*c.libev_loop, _: ?*c.libev_io, _: c_int) callconv(.c) void {}
 
 fn benchmarkActiveTimers(allocator: std.mem.Allocator, writer: anytype) !void {
-    const iterations: usize = 1_000;
-    const num_timers: usize = 50;
+    const iterations: usize = 10_000;
+    const num_timers: usize = 100;
 
     const zv_result = try benchmarkZvActiveTimers(allocator, iterations, num_timers);
     const libev_result = try benchmarkLibevActiveTimers(iterations, num_timers);
@@ -243,7 +243,7 @@ fn benchmarkZvActiveTimers(allocator: std.mem.Allocator, iterations: usize, num_
     const throughput = @as(f64, @floatFromInt(iterations)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0);
 
     return Result{
-        .name = "zv (50 active timers)",
+        .name = "zv (100 active timers)",
         .time_ns = elapsed,
         .iterations = iterations,
         .throughput = throughput,
@@ -286,7 +286,7 @@ fn benchmarkLibevActiveTimers(iterations: usize, num_timers: usize) !Result {
     const throughput = @as(f64, @floatFromInt(iterations)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0);
 
     return Result{
-        .name = "libev (50 active timers)",
+        .name = "libev (100 active timers)",
         .time_ns = elapsed,
         .iterations = iterations,
         .throughput = throughput,

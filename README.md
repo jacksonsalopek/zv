@@ -32,6 +32,9 @@ View example code in the `examples/` directory:
 - **Memory Safe**: Uses Zig's allocator system and error handling
 - **Zero Dependencies**: Only uses Zig's standard library
 - **Library-Only**: Designed as a reusable library, not an executable
+- **Optimized Data Structures**: 
+  - Intrusive min-heap for timers (O(log n) for all operations)
+  - Direct pointer storage in backends (zero lookup overhead)
 
 ## Installation
 
@@ -283,10 +286,11 @@ zig build benchmark -- --help
 If libev is not installed, the build system will provide installation instructions for your platform.
 
 **Results:**
-zv demonstrates **21-34% better performance** than libev across various scenarios:
-- Empty loop: 1.47x faster
-- 100 idle watchers: 1.51x faster
-- 50 active timers: 1.27x faster
+zv demonstrates **30-45% better performance** than libev across various scenarios:
+- Empty loop: 1.31-1.46x faster (500k iterations)
+- 1000 idle watchers: 1.43x faster (50k iterations)
+- 100 active timers: 1.45x faster (10k iterations)
+- Scales to 10,000 IO watchers and 5,000 timers
 
 See [**Benchmark Documentation**](./docs/benchmarks/README.md) for detailed results and methodology.
 

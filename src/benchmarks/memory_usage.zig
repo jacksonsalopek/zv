@@ -74,7 +74,7 @@ fn benchmarkZvLoopInit(allocator: std.mem.Allocator) !Result {
 }
 
 fn benchmarkIoWatchersMemory(allocator: std.mem.Allocator, writer: anytype) !void {
-    const num_watchers: usize = 100;
+    const num_watchers: usize = 1000;
 
     const zv_result = try benchmarkZvIoMemory(allocator, num_watchers);
     const libev_result = try benchmarkLibevIoMemory(num_watchers);
@@ -129,7 +129,7 @@ fn benchmarkZvIoMemory(allocator: std.mem.Allocator, num_watchers: usize) !Resul
     const stats = tracker.snapshot();
 
     return Result{
-        .name = "zv (100 IO watchers)",
+        .name = "zv (1000 IO watchers)",
         .time_ns = elapsed,
         .allocations = stats.allocations,
         .bytes_allocated = stats.bytes_allocated,
@@ -140,7 +140,7 @@ fn benchmarkZvIoMemory(allocator: std.mem.Allocator, num_watchers: usize) !Resul
 fn dummyCallback(_: *zv.io.Watcher, _: zv.Backend.EventMask) void {}
 
 fn benchmarkTimerWatchersMemory(allocator: std.mem.Allocator, writer: anytype) !void {
-    const num_watchers: usize = 100;
+    const num_watchers: usize = 1000;
 
     const zv_result = try benchmarkZvTimerMemory(allocator, num_watchers);
     const libev_result = try benchmarkLibevTimerMemory(num_watchers);
@@ -182,7 +182,7 @@ fn benchmarkZvTimerMemory(allocator: std.mem.Allocator, num_watchers: usize) !Re
     const stats = tracker.snapshot();
 
     return Result{
-        .name = "zv (100 timer watchers)",
+        .name = "zv (1000 timer watchers)",
         .time_ns = elapsed,
         .allocations = stats.allocations,
         .bytes_allocated = stats.bytes_allocated,
@@ -248,7 +248,7 @@ fn benchmarkLibevIoMemory(num_watchers: usize) !Result {
     }
 
     return Result{
-        .name = "libev (100 IO watchers)",
+        .name = "libev (1000 IO watchers)",
         .time_ns = elapsed,
     };
 }
@@ -284,7 +284,7 @@ fn benchmarkLibevTimerMemory(num_watchers: usize) !Result {
     }
 
     return Result{
-        .name = "libev (100 timer watchers)",
+        .name = "libev (1000 timer watchers)",
         .time_ns = elapsed,
     };
 }
@@ -350,14 +350,14 @@ fn benchmarkLibevMixed(num_io: usize, num_timers: usize) !Result {
     }
 
     return Result{
-        .name = "libev (50 IO + 50 timer watchers)",
+        .name = "libev (500 IO + 500 timer watchers)",
         .time_ns = elapsed,
     };
 }
 
 fn benchmarkMixedMemory(allocator: std.mem.Allocator, writer: anytype) !void {
-    const num_io: usize = 50;
-    const num_timers: usize = 50;
+    const num_io: usize = 500;
+    const num_timers: usize = 500;
 
     const zv_result = try benchmarkZvMixed(allocator, num_io, num_timers);
     const libev_result = try benchmarkLibevMixed(num_io, num_timers);
@@ -422,7 +422,7 @@ fn benchmarkZvMixed(allocator: std.mem.Allocator, num_io: usize, num_timers: usi
     const stats = tracker.snapshot();
 
     return Result{
-        .name = "zv (50 IO + 50 timer watchers)",
+        .name = "zv (500 IO + 500 timer watchers)",
         .time_ns = elapsed,
         .allocations = stats.allocations,
         .bytes_allocated = stats.bytes_allocated,

@@ -36,7 +36,7 @@ pub fn run(allocator: std.mem.Allocator, writer: anytype) !void {
 }
 
 fn benchmarkAddWatchers(allocator: std.mem.Allocator, writer: anytype) !void {
-    const num_watchers: usize = 1000;
+    const num_watchers: usize = 5000;
 
     const zv_result = try benchmarkZvAdd(allocator, num_watchers);
     const libev_result = try benchmarkLibevAdd(num_watchers);
@@ -152,8 +152,8 @@ fn benchmarkLibevAdd(num_watchers: usize) !Result {
 fn libevDummyCallback(_: ?*c.libev_loop, _: ?*c.libev_io, _: c_int) callconv(.c) void {}
 
 fn benchmarkModifyWatchers(allocator: std.mem.Allocator, writer: anytype) !void {
-    const num_watchers: usize = 1000;
-    const modifications: usize = 10;
+    const num_watchers: usize = 5000;
+    const modifications: usize = 20;
 
     const zv_result = try benchmarkZvModify(allocator, num_watchers, modifications);
     const libev_result = try benchmarkLibevModify(num_watchers, modifications);
@@ -263,7 +263,7 @@ fn benchmarkLibevModify(num_watchers: usize, modifications: usize) !Result {
 }
 
 fn benchmarkRemoveWatchers(allocator: std.mem.Allocator, writer: anytype) !void {
-    const num_watchers: usize = 1000;
+    const num_watchers: usize = 5000;
 
     const zv_result = try benchmarkZvRemove(allocator, num_watchers);
     const libev_result = try benchmarkLibevRemove(num_watchers);

@@ -35,7 +35,7 @@ pub fn run(allocator: std.mem.Allocator, writer: anytype) !void {
 }
 
 fn benchmarkTimerCreation(allocator: std.mem.Allocator, writer: anytype) !void {
-    const num_timers: usize = 1000;
+    const num_timers: usize = 5000;
 
     const zv_result = try benchmarkZvTimerCreation(allocator, num_timers);
     const libev_result = try benchmarkLibevTimerCreation(num_timers);
@@ -220,7 +220,7 @@ fn libevBreakCallback(loop: ?*c.libev_loop, _: ?*c.libev_timer, _: c_int) callco
 }
 
 fn benchmarkRepeatingTimers(allocator: std.mem.Allocator, writer: anytype) !void {
-    const iterations: usize = 1000;
+    const iterations: usize = 5000;
     const num_timers: usize = 10;
 
     const zv_result = try benchmarkZvRepeating(allocator, iterations, num_timers);

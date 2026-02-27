@@ -15,6 +15,7 @@ pub const Watcher = struct {
     deadline: time.Timestamp,
     repeat_ns: u64,
     active: bool,
+    heap_index: usize,
 
     pub fn init(
         loop: *Loop,
@@ -29,6 +30,7 @@ pub const Watcher = struct {
             .deadline = 0,
             .repeat_ns = repeat_ns,
             .active = false,
+            .heap_index = undefined,
         };
     }
 

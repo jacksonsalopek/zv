@@ -166,6 +166,25 @@ signal.stop();
 4. **Idiomatic Zig** - Follow Zig naming conventions and patterns
 5. **Performance** - Comparable or better than C implementations
 
+## Performance Optimizations
+
+### Intrusive Timer Heap
+- Each timer stores its heap index (8 bytes overhead)
+- **Remove specific**: O(n) → O(log n) (up to 1000x faster at scale)
+- **Update timer**: O(n) → O(log n)
+- All operations maintain O(log n) complexity
+
+### Direct Pointer Storage
+- Backend stores watcher pointers in kernel structures:
+  - **epoll**: Uses `epoll_data.ptr`
+  - **kqueue**: Uses `.udata` field
+  - **poll/select**: Separate user_data map
+- Eliminates HashMap lookup on every event (zero overhead)
+
+### Cached Time
+- Time cached per iteration to avoid excessive syscalls
+- Manual `updateTime()` for precision-critical code
+
 ## Comparison with libev
 
 | Feature | zv | libev |

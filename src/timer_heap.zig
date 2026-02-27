@@ -1,6 +1,7 @@
-//! Min-heap for efficient timer management
+//! Intrusive min-heap for efficient timer management
 //!
-//! Provides O(log n) insertion, removal, and O(1) access to the next timer.
+//! Uses intrusive indexing where each timer stores its heap position.
+//! This provides O(log n) for all operations including specific timer removal.
 
 const std = @import("std");
 const TimerWatcher = @import("watcher/timer.zig").Watcher;
@@ -26,8 +27,10 @@ pub const TimerHeap = struct {
 
     /// Insert timer into heap - O(log n)
     pub fn insert(self: *TimerHeap, timer: *TimerWatcher) !void {
+        const idx = self.items.items.len;
         try self.items.append(self.allocator, timer);
-        self.siftUp(self.items.items.len - 1);
+        timer.heap_index = idx;
+        self.siftUp(idx);
     }
 
     /// Peek at the next timer without removing - O(1)
@@ -49,27 +52,33 @@ pub const TimerHeap = struct {
         }
         
         self.items.items[0] = self.items.items[last_idx];
+        self.items.items[0].heap_index = 0;
         _ = self.items.pop();
         self.siftDown(0);
         
         return min;
     }
 
-    /// Remove specific timer - O(n) for search + O(log n) for removal
+    /// Remove specific timer - O(log n) with intrusive index
     pub fn remove(self: *TimerHeap, timer: *TimerWatcher) void {
-        const idx = self.findIndex(timer) orelse return;
-        self.removeAt(idx);
+        if (timer.heap_index >= self.items.items.len) return;
+        if (self.items.items[timer.heap_index] != timer) return;
+        
+        self.removeAt(timer.heap_index);
     }
 
-    /// Update timer position after deadline change - O(n) for search + O(log n) for reheap
+    /// Update timer position after deadline change - O(log n) with intrusive index
     pub fn update(self: *TimerHeap, timer: *TimerWatcher) void {
-        const idx = self.findIndex(timer) orelse return;
+        if (timer.heap_index >= self.items.items.len) return;
+        if (self.items.items[timer.heap_index] != timer) return;
         
-        self.siftUp(idx);
-        self.siftDown(idx);
+        self.siftUp(timer.heap_index);
+        self.siftDown(timer.heap_index);
     }
 
     fn removeAt(self: *TimerHeap, idx: usize) void {
+        if (idx >= self.items.items.len) return;
+        
         const last_idx = self.items.items.len - 1;
         
         if (idx == last_idx) {
@@ -78,6 +87,7 @@ pub const TimerHeap = struct {
         }
         
         self.items.items[idx] = self.items.items[last_idx];
+        self.items.items[idx].heap_index = idx;
         _ = self.items.pop();
         
         self.siftUp(idx);
@@ -138,6 +148,9 @@ pub const TimerHeap = struct {
         const temp = self.items.items[i];
         self.items.items[i] = self.items.items[j];
         self.items.items[j] = temp;
+        
+        self.items.items[i].heap_index = i;
+        self.items.items[j].heap_index = j;
     }
 };
 
