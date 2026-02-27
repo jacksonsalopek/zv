@@ -20,6 +20,7 @@ const FD_SETSIZE: usize = 1024;
 allocator: std.mem.Allocator,
 read_fds: std.AutoHashMap(std.posix.fd_t, void),
 write_fds: std.AutoHashMap(std.posix.fd_t, void),
+user_data_map: std.AutoHashMap(std.posix.fd_t, ?*anyopaque),
 max_fd: std.posix.fd_t,
 
 pub fn init(allocator: std.mem.Allocator) !Backend {
@@ -30,6 +31,7 @@ pub fn init(allocator: std.mem.Allocator) !Backend {
         .allocator = allocator,
         .read_fds = std.AutoHashMap(std.posix.fd_t, void).init(allocator),
         .write_fds = std.AutoHashMap(std.posix.fd_t, void).init(allocator),
+        .user_data_map = std.AutoHashMap(std.posix.fd_t, ?*anyopaque).init(allocator),
         .max_fd = 0,
     };
 
@@ -51,10 +53,11 @@ fn deinitImpl(ptr: *anyopaque) void {
     const self: *Select = @ptrCast(@alignCast(ptr));
     self.read_fds.deinit();
     self.write_fds.deinit();
+    self.user_data_map.deinit();
     self.allocator.destroy(self);
 }
 
-fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !void {
+fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) !void {
     const self: *Select = @ptrCast(@alignCast(ptr));
 
     if (fd >= FD_SETSIZE) return error.FdTooLarge;
@@ -65,17 +68,19 @@ fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !voi
     if (interest.write) {
         try self.write_fds.put(fd, {});
     }
-
+    
+    try self.user_data_map.put(fd, user_data);
     self.updateMaxFd();
 }
 
 fn modifyImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !void {
     const self: *Select = @ptrCast(@alignCast(ptr));
 
+    const user_data = self.user_data_map.get(fd) orelse null;
     _ = self.read_fds.remove(fd);
     _ = self.write_fds.remove(fd);
 
-    return addImpl(ptr, fd, interest);
+    return addImpl(ptr, fd, interest, user_data);
 }
 
 fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) !void {
@@ -83,6 +88,7 @@ fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) !void {
 
     _ = self.read_fds.remove(fd);
     _ = self.write_fds.remove(fd);
+    _ = self.user_data_map.remove(fd);
 
     self.updateMaxFd();
 }

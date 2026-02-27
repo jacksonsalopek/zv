@@ -7,12 +7,16 @@ const Backend = @import("backend.zig");
 const time = @import("time.zig");
 const IoWatcher = @import("watcher/io.zig").Watcher;
 const TimerWatcher = @import("watcher/timer.zig").Watcher;
+const PrepareWatcher = @import("watcher/prepare.zig").Watcher;
+const CheckWatcher = @import("watcher/check.zig").Watcher;
+const TimerHeap = @import("timer_heap.zig").TimerHeap;
 
 const Loop = @This();
 
 pub const Options = struct {
     backend: ?Backend.Kind = null,
     max_events: usize = 64,
+    initial_watcher_capacity: usize = 32,
 };
 
 pub const RunMode = enum {
@@ -32,7 +36,9 @@ iteration: u64,
 now_cache: time.Timestamp,
 
 io_watchers: std.AutoHashMap(std.posix.fd_t, *IoWatcher),
-timer_list: std.ArrayList(*TimerWatcher),
+timer_heap: TimerHeap,
+prepare_list: std.ArrayList(*PrepareWatcher),
+check_list: std.ArrayList(*CheckWatcher),
 pending_count: usize,
 
 pub fn init(allocator: std.mem.Allocator, options: Options) !Loop {
@@ -43,6 +49,9 @@ pub fn init(allocator: std.mem.Allocator, options: Options) !Loop {
     const event_buffer = try allocator.alloc(Backend.Event, options.max_events);
     errdefer allocator.free(event_buffer);
 
+    var io_watchers = std.AutoHashMap(std.posix.fd_t, *IoWatcher).init(allocator);
+    try io_watchers.ensureTotalCapacity(@intCast(options.initial_watcher_capacity));
+
     return Loop{
         .allocator = allocator,
         .backend = backend,
@@ -50,8 +59,10 @@ pub fn init(allocator: std.mem.Allocator, options: Options) !Loop {
         .running = false,
         .iteration = 0,
         .now_cache = time.now(),
-        .io_watchers = std.AutoHashMap(std.posix.fd_t, *IoWatcher).init(allocator),
-        .timer_list = std.ArrayList(*TimerWatcher){},
+        .io_watchers = io_watchers,
+        .timer_heap = TimerHeap.init(allocator),
+        .prepare_list = std.ArrayList(*PrepareWatcher){},
+        .check_list = std.ArrayList(*CheckWatcher){},
         .pending_count = 0,
     };
 }
@@ -60,7 +71,9 @@ pub fn deinit(self: *Loop) void {
     self.backend.deinit();
     self.allocator.free(self.event_buffer);
     self.io_watchers.deinit();
-    self.timer_list.deinit(self.allocator);
+    self.timer_heap.deinit();
+    self.prepare_list.deinit(self.allocator);
+    self.check_list.deinit(self.allocator);
 }
 
 /// Update cached time
@@ -96,66 +109,65 @@ fn iterate(self: *Loop, mode: RunMode) !bool {
     self.updateTime();
 
     try self.processTimers();
+    self.processPrepare();
 
     const timeout = self.calculateTimeout(mode);
+
+    // Handle timer-only scenario: epoll/kqueue/poll require at least one file
+    // descriptor to wait on. When we only have timers and no I/O watchers,
+    // the backend returns immediately without waiting. We manually sleep
+    // to allow timers to fire correctly.
+    if (self.io_watchers.count() == 0 and timeout != null and timeout.? > 0) {
+        std.Thread.sleep(timeout.?);
+        self.updateTime();
+        self.processCheck();
+        try self.processTimers();
+        return self.timer_heap.count() > 0;
+    }
 
     const n_events = try self.backend.wait(self.event_buffer, timeout);
 
     self.updateTime();
+    self.processCheck();
 
     for (self.event_buffer[0..n_events]) |event| {
-        if (self.io_watchers.get(event.fd)) |watcher| {
+        if (event.user_data) |user_data| {
+            const watcher: *IoWatcher = @ptrCast(@alignCast(user_data));
             watcher.invoke(event.events);
         }
     }
 
-    const has_active = self.io_watchers.count() > 0 or self.timer_list.items.len > 0;
+    const has_active = self.io_watchers.count() > 0 or self.timer_heap.count() > 0;
     return has_active;
 }
 
 fn processTimers(self: *Loop) !void {
     const current_time = self.now();
 
-    var i: usize = 0;
-    while (i < self.timer_list.items.len) {
-        const timer = self.timer_list.items[i];
-        if (timer.isExpired(current_time)) {
-            timer.invoke();
-            if (!timer.active) {
-                _ = self.timer_list.swapRemove(i);
-                continue;
-            }
+    while (self.timer_heap.peek()) |timer| {
+        if (!timer.isExpired(current_time)) break;
+        
+        _ = self.timer_heap.removeMin();
+        timer.invoke();
+        
+        if (timer.active) {
+            try self.timer_heap.insert(timer);
         }
-        i += 1;
     }
 }
 
 fn calculateTimeout(self: *Loop, mode: RunMode) ?u64 {
     if (mode == .nowait) return 0;
 
-    if (self.timer_list.items.len == 0) {
-        return if (mode == .once) null else null;
-    }
-
-    var min_timeout: ?u64 = null;
+    const timer = self.timer_heap.peek() orelse return null;
     const current_time = self.now();
 
-    for (self.timer_list.items) |timer| {
-        if (!timer.active) continue;
+    const remaining = if (timer.deadline > current_time)
+        timer.deadline - current_time
+    else
+        0;
 
-        const remaining = if (timer.deadline > current_time)
-            timer.deadline - current_time
-        else
-            0;
-
-        if (min_timeout) |current_min| {
-            min_timeout = @min(current_min, remaining);
-        } else {
-            min_timeout = remaining;
-        }
-    }
-
-    return min_timeout;
+    return remaining;
 }
 
 pub fn registerIoWatcher(self: *Loop, fd: std.posix.fd_t, watcher: *IoWatcher) !void {
@@ -167,14 +179,51 @@ pub fn unregisterIoWatcher(self: *Loop, fd: std.posix.fd_t) void {
 }
 
 pub fn registerTimer(self: *Loop, watcher: *TimerWatcher) !void {
-    try self.timer_list.append(self.allocator, watcher);
+    try self.timer_heap.insert(watcher);
 }
 
 pub fn unregisterTimer(self: *Loop, watcher: *TimerWatcher) void {
-    for (self.timer_list.items, 0..) |w, i| {
+    self.timer_heap.remove(watcher);
+}
+
+pub fn registerPrepare(self: *Loop, watcher: *PrepareWatcher) !void {
+    try self.prepare_list.append(self.allocator, watcher);
+}
+
+pub fn unregisterPrepare(self: *Loop, watcher: *PrepareWatcher) void {
+    for (self.prepare_list.items, 0..) |w, i| {
         if (w == watcher) {
-            _ = self.timer_list.swapRemove(i);
+            _ = self.prepare_list.swapRemove(i);
             break;
+        }
+    }
+}
+
+pub fn registerCheck(self: *Loop, watcher: *CheckWatcher) !void {
+    try self.check_list.append(self.allocator, watcher);
+}
+
+pub fn unregisterCheck(self: *Loop, watcher: *CheckWatcher) void {
+    for (self.check_list.items, 0..) |w, i| {
+        if (w == watcher) {
+            _ = self.check_list.swapRemove(i);
+            break;
+        }
+    }
+}
+
+fn processPrepare(self: *Loop) void {
+    for (self.prepare_list.items) |watcher| {
+        if (watcher.active) {
+            watcher.invoke();
+        }
+    }
+}
+
+fn processCheck(self: *Loop) void {
+    for (self.check_list.items) |watcher| {
+        if (watcher.active) {
+            watcher.invoke();
         }
     }
 }

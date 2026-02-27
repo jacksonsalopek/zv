@@ -54,7 +54,7 @@ fn benchmarkZvAdd(allocator: std.mem.Allocator, num_watchers: usize) !Result {
     var tracker = AllocTracker{ .parent_allocator = allocator };
     const tracked = tracker.allocator();
 
-    var loop = try zv.Loop.init(tracked, .{});
+    var loop = try zv.Loop.init(tracked, .{ .initial_watcher_capacity = num_watchers });
     defer loop.deinit();
 
     const pipes = try tracked.alloc([2]std.posix.fd_t, num_watchers);
@@ -168,7 +168,7 @@ fn benchmarkModifyWatchers(allocator: std.mem.Allocator, writer: anytype) !void 
 }
 
 fn benchmarkZvModify(allocator: std.mem.Allocator, num_watchers: usize, modifications: usize) !Result {
-    var loop = try zv.Loop.init(allocator, .{});
+    var loop = try zv.Loop.init(allocator, .{ .initial_watcher_capacity = num_watchers });
     defer loop.deinit();
 
     const pipes = try allocator.alloc([2]std.posix.fd_t, num_watchers);
@@ -278,7 +278,7 @@ fn benchmarkRemoveWatchers(allocator: std.mem.Allocator, writer: anytype) !void 
 }
 
 fn benchmarkZvRemove(allocator: std.mem.Allocator, num_watchers: usize) !Result {
-    var loop = try zv.Loop.init(allocator, .{});
+    var loop = try zv.Loop.init(allocator, .{ .initial_watcher_capacity = num_watchers });
     defer loop.deinit();
 
     const pipes = try allocator.alloc([2]std.posix.fd_t, num_watchers);

@@ -31,8 +31,8 @@ pub fn run(allocator: std.mem.Allocator, writer: anytype) !void {
 }
 
 fn benchmarkIoScaling(allocator: std.mem.Allocator, writer: anytype) !void {
-    const scales = [_]usize{ 10, 50, 100, 500, 1000 };
-    const iterations: usize = 1000;
+    const scales = [_]usize{ 10, 50, 100, 500, 1000, 2000 };
+    const iterations: usize = 10000;
 
     try writer.writeAll("\nWatcher Count | zv (ms) | libev (ms) | Comparison\n");
     try writer.writeAll("------------- | ------- | ---------- | ----------\n");
@@ -145,8 +145,8 @@ fn benchmarkLibevIoScale(num_watchers: usize, iterations: usize) !Result {
 fn libevDummyCallback(_: ?*c.libev_loop, _: ?*c.libev_io, _: c_int) callconv(.c) void {}
 
 fn benchmarkTimerScaling(allocator: std.mem.Allocator, writer: anytype) !void {
-    const scales = [_]usize{ 10, 50, 100, 250, 500 };
-    const iterations: usize = 500;
+    const scales = [_]usize{ 10, 50, 100, 250, 500, 1000 };
+    const iterations: usize = 1000;
 
     try writer.writeAll("\nTimer Count   | zv (ms) | libev (ms) | Comparison\n");
     try writer.writeAll("------------- | ------- | ---------- | ----------\n");

@@ -43,13 +43,16 @@ fn deinitImpl(ptr: *anyopaque) void {
     self.allocator.destroy(self);
 }
 
-fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !void {
+fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) !void {
     const self: *Epoll = @ptrCast(@alignCast(ptr));
     const events = interestToEpollEvents(interest);
 
     var event = linux.epoll_event{
         .events = events,
-        .data = linux.epoll_data{ .fd = fd },
+        .data = if (user_data) |data|
+            linux.epoll_data{ .ptr = @intFromPtr(data) }
+        else
+            linux.epoll_data{ .fd = fd },
     };
 
     try std.posix.epoll_ctl(self.epoll_fd, linux.EPOLL.CTL_ADD, fd, &event);
@@ -87,8 +90,9 @@ fn waitImpl(ptr: *anyopaque, events: []Backend.Event, timeout_ns: ?u64) !usize {
 
     for (epoll_events[0..n], 0..) |epoll_event, i| {
         events[i] = .{
-            .fd = epoll_event.data.fd,
+            .fd = 0, // Not needed when user_data is available
             .events = epollEventsToMask(epoll_event.events),
+            .user_data = if (epoll_event.data.ptr != 0) @ptrFromInt(epoll_event.data.ptr) else null,
         };
     }
 

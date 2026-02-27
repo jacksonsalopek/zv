@@ -43,8 +43,10 @@ fn deinitImpl(ptr: *anyopaque) void {
     self.allocator.destroy(self);
 }
 
-fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !void {
+fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) !void {
     const self: *Kqueue = @ptrCast(@alignCast(ptr));
+
+    const udata_value: usize = if (user_data) |data| @intFromPtr(data) else 0;
 
     var changes: [2]std.posix.system.Kevent = undefined;
     var n_changes: usize = 0;
@@ -56,7 +58,7 @@ fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !voi
             .flags = std.posix.system.EV_ADD | std.posix.system.EV_ENABLE,
             .fflags = 0,
             .data = 0,
-            .udata = 0,
+            .udata = udata_value,
         };
         n_changes += 1;
     }
@@ -68,7 +70,7 @@ fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !voi
             .flags = std.posix.system.EV_ADD | std.posix.system.EV_ENABLE,
             .fflags = 0,
             .data = 0,
-            .udata = 0,
+            .udata = udata_value,
         };
         n_changes += 1;
     }
@@ -136,6 +138,7 @@ fn waitImpl(ptr: *anyopaque, events: []Backend.Event, timeout_ns: ?u64) !usize {
             events[event_idx] = .{
                 .fd = fd,
                 .events = mask,
+                .user_data = if (kevent.udata != 0) @ptrFromInt(kevent.udata) else null,
             };
             event_idx += 1;
         }

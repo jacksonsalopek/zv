@@ -10,6 +10,7 @@ const Poll = @This();
 allocator: std.mem.Allocator,
 fds: std.ArrayList(std.posix.pollfd),
 fd_map: std.AutoHashMap(std.posix.fd_t, usize),
+user_data_map: std.AutoHashMap(std.posix.fd_t, ?*anyopaque),
 
 pub fn init(allocator: std.mem.Allocator) !Backend {
     const self = try allocator.create(Poll);
@@ -19,6 +20,7 @@ pub fn init(allocator: std.mem.Allocator) !Backend {
         .allocator = allocator,
         .fds = std.ArrayList(std.posix.pollfd){},
         .fd_map = std.AutoHashMap(std.posix.fd_t, usize).init(allocator),
+        .user_data_map = std.AutoHashMap(std.posix.fd_t, ?*anyopaque).init(allocator),
     };
 
     return Backend{
@@ -39,10 +41,11 @@ fn deinitImpl(ptr: *anyopaque) void {
     const self: *Poll = @ptrCast(@alignCast(ptr));
     self.fds.deinit(self.allocator);
     self.fd_map.deinit();
+    self.user_data_map.deinit();
     self.allocator.destroy(self);
 }
 
-fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !void {
+fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) !void {
     const self: *Poll = @ptrCast(@alignCast(ptr));
 
     if (self.fd_map.contains(fd)) return error.AlreadyExists;
@@ -57,6 +60,7 @@ fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !voi
     });
 
     try self.fd_map.put(fd, idx);
+    try self.user_data_map.put(fd, user_data);
 }
 
 fn modifyImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !void {
@@ -75,6 +79,7 @@ fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) !void {
 
     _ = self.fds.swapRemove(idx);
     _ = self.fd_map.remove(fd);
+    _ = self.user_data_map.remove(fd);
 
     if (idx < self.fds.items.len) {
         const moved_fd = self.fds.items[idx].fd;
@@ -104,6 +109,7 @@ fn waitImpl(ptr: *anyopaque, events: []Backend.Event, timeout_ns: ?u64) !usize {
             events[event_idx] = .{
                 .fd = pollfd.fd,
                 .events = mask,
+                .user_data = self.user_data_map.get(pollfd.fd) orelse null,
             };
             event_idx += 1;
         }

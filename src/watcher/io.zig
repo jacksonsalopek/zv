@@ -47,8 +47,7 @@ pub const Watcher = struct {
     pub fn start(self: *Watcher) !void {
         if (self.active) return;
 
-        try self.loop.backend.add(self.fd, self.events.toInterest());
-        try self.loop.registerIoWatcher(self.fd, self);
+        try self.loop.backend.add(self.fd, self.events.toInterest(), self);
         self.active = true;
     }
 
@@ -56,7 +55,6 @@ pub const Watcher = struct {
         if (!self.active) return;
 
         try self.loop.backend.remove(self.fd);
-        self.loop.unregisterIoWatcher(self.fd);
         self.active = false;
     }
 

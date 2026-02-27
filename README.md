@@ -6,7 +6,13 @@ A Zig port of libev with better memory safety and a smaller footprint. zv provid
 
 - **[API Documentation](./docs/README.md)** - Complete API reference and guides
 - **[Benchmarks](./docs/benchmarks/README.md)** - Performance comparison with libev
-- **[Examples](./examples/)** - Usage examples
+- **[Examples](./examples/)** - Usage examples (see below for running)
+
+## Examples
+
+View example code in the `examples/` directory:
+- `basic_example.zig` - IO and timer watchers
+- `prepare_check_example.zig` - Prepare and check watchers
 
 ## Features
 
@@ -20,6 +26,8 @@ A Zig port of libev with better memory safety and a smaller footprint. zv provid
   - IO watchers for file descriptor monitoring
   - Timer watchers for time-based events
   - Signal watchers for Unix signal handling
+  - Prepare watchers for pre-poll callbacks
+  - Check watchers for post-poll callbacks
 
 - **Memory Safe**: Uses Zig's allocator system and error handling
 - **Zero Dependencies**: Only uses Zig's standard library
@@ -170,6 +178,46 @@ try signal_watcher.start();
 defer signal_watcher.deinit();
 ```
 
+### Prepare Watchers
+
+Execute callbacks before the loop polls for events.
+
+```zig
+var prepare = zv.prepare.Watcher.init(&loop, callback);
+try prepare.start();
+defer prepare.stop();
+
+// Callback runs before each backend.wait() call
+fn callback(watcher: *zv.prepare.Watcher) void {
+    std.debug.print("About to poll...\n", .{});
+}
+```
+
+**Use cases:**
+- Integrating other event loops
+- Setup work before blocking
+- Performance instrumentation
+
+### Check Watchers
+
+Execute callbacks after the loop polls for events.
+
+```zig
+var check = zv.check.Watcher.init(&loop, callback);
+try check.start();
+defer check.stop();
+
+// Callback runs after each backend.wait() call
+fn callback(watcher: *zv.check.Watcher) void {
+    std.debug.print("Just finished polling...\n", .{});
+}
+```
+
+**Use cases:**
+- Integrating other event loops
+- Cleanup work after blocking
+- Latency measurements
+
 ## Time Utilities
 
 ```zig
@@ -281,8 +329,8 @@ Contributions are welcome! Please ensure:
 
 ## Roadmap
 
-- [ ] Add prepare/check watchers
+- [x] Add prepare/check watchers
 - [ ] Add async watcher support
 - [ ] Add child process watchers
 - [x] Benchmark suite
-- [ ] More comprehensive examples
+- [x] Comprehensive examples

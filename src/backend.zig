@@ -20,6 +20,7 @@ pub const Kind = enum {
 pub const Event = struct {
     fd: std.posix.fd_t,
     events: EventMask,
+    user_data: ?*anyopaque = null,
 };
 
 pub const EventMask = packed struct {
@@ -43,7 +44,7 @@ vtable: *const VTable,
 
 pub const VTable = struct {
     deinit: *const fn (ptr: *anyopaque) void,
-    add: *const fn (ptr: *anyopaque, fd: std.posix.fd_t, interest: Interest) anyerror!void,
+    add: *const fn (ptr: *anyopaque, fd: std.posix.fd_t, interest: Interest, user_data: ?*anyopaque) anyerror!void,
     modify: *const fn (ptr: *anyopaque, fd: std.posix.fd_t, interest: Interest) anyerror!void,
     remove: *const fn (ptr: *anyopaque, fd: std.posix.fd_t) anyerror!void,
     wait: *const fn (ptr: *anyopaque, events: []Event, timeout_ns: ?u64) anyerror!usize,
@@ -94,8 +95,8 @@ pub fn deinit(self: Backend) void {
 }
 
 /// Register a file descriptor for monitoring
-pub fn add(self: Backend, fd: std.posix.fd_t, interest: Interest) !void {
-    return self.vtable.add(self.ptr, fd, interest);
+pub fn add(self: Backend, fd: std.posix.fd_t, interest: Interest, user_data: ?*anyopaque) !void {
+    return self.vtable.add(self.ptr, fd, interest, user_data);
 }
 
 /// Modify the events to monitor for a file descriptor
