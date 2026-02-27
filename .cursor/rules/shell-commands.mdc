@@ -1,0 +1,42 @@
+---
+description: Avoid unnecessary cd and echo in shell commands
+alwaysApply: true
+---
+
+# Shell Command Best Practices
+
+## Avoid Unnecessary `cd`
+
+Use the `working_directory` parameter instead:
+
+```zig
+// ❌ BAD
+Shell.run("cd /path && command")
+
+// ✅ GOOD
+Shell.run("command", .{ .working_directory = "/path" })
+```
+
+## Avoid Unnecessary `echo`
+
+Commands provide their own output:
+
+```bash
+# ❌ BAD
+command && echo "Done"
+
+# ✅ GOOD
+command
+```
+
+## Keep Commands Simple
+
+Only chain commands when dependencies exist:
+
+```bash
+# ❌ BAD
+cd dir && echo "Building" && make && echo "Done"
+
+# ✅ GOOD
+make  # Use working_directory parameter
+```

@@ -1,0 +1,38 @@
+---
+description: Enforce concise summaries - maximum 3 sentences
+alwaysApply: true
+---
+
+# CRITICAL: Summary Length Enforcement
+
+You MUST limit final summaries to **3 sentences maximum**. Any summary longer than 3 sentences is a violation.
+
+## When Finishing a Task Response
+
+- Maximum 3 sentences total
+- No bullet points in summaries
+- No subsections like "What We Built" or "Statistics"
+- No multi-paragraph responses
+- No emoji headers or formatting
+
+## Examples
+
+❌ **BAD** - Multi-paragraph summary with sections:
+```
+## Summary
+Successfully completed the DisplayID implementation.
+
+### What Was Built
+- timing.zig with parsers
+- example.zig 
+- README.md
+
+### Statistics  
+- 1,296 lines
+- 11 tests
+```
+
+✅ **GOOD** - Concise 3-sentence summary:
+```
+Successfully completed DisplayID v1/v2 implementation with all timing types (I-IV, VII-X). All 679 tests pass with zero linter errors. Implementation validated against upstream libdisplay-info.
+```

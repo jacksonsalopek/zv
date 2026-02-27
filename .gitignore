@@ -1,0 +1,83 @@
+# Zig build artifacts
+.zig-cache/
+zig-out/
+zig-cache/
+
+# Build outputs
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Generated documentation
+docs/generated/
+
+# Benchmark results
+benchmark_results.txt
+benchmark-*.txt
+*.bench
+
+# Editor and IDE files
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-workspace
+*.sublime-project
+
+# Tags
+tags
+TAGS
+.tags
+.TAGS
+
+# OS-specific
+Thumbs.db
+Desktop.ini
+
+# Debug artifacts
+*.dSYM/
+*.pdb
+
+# Test outputs
+test-results/
+*.test
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Log files
+*.log
+
+# Core dumps
+core
+core.*
+
+# Package manager
+.zig-cache/
+vendor/
+
+# Custom build scripts output
+build/
+dist/
+
+# Coverage
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# Profiling
+*.prof
+perf.data
+perf.data.old
+
+# Local configuration (if any)
+.env
+.env.local
+local.zig

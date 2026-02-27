@@ -1,0 +1,13 @@
+---
+description: Enforce testing during implementation
+alwaysApply: true
+---
+
+## Testing
+- Test all public functions with descriptive test blocks
+- Cover happy path, edge cases, and error conditions
+- Use `testing.expectEqual` for value comparisons
+- Colocate tests with implementation code
+- **Always use `testing.allocator` for tests that need allocation**
+- Call `defer allocator.deinit()` or equivalent cleanup in tests to catch memory leaks
+- Avoid `std.heap.page_allocator` in tests—it won't detect leaks

@@ -1,0 +1,87 @@
+---
+description: Enforce maximum 2-level nesting in Zig code for maintainability
+globs: **/*.zig
+alwaysApply: false
+---
+
+# Zig Nesting Reduction
+
+**CRITICAL**: Maximum **2 levels of nesting** in all functions.
+
+## Techniques
+
+### 1. Early Returns (Guard Clauses)
+
+```zig
+// ❌ BAD - 3 levels
+pub fn process(self: *Self, item: Item) !void {
+    if (item.valid) {
+        if (item.data) |data| {
+            if (data.len > 0) {
+                try self.work(data);
+            }
+        }
+    }
+}
+
+// ✅ GOOD - 0 levels
+pub fn process(self: *Self, item: Item) !void {
+    if (!item.valid) return;
+    const data = item.data orelse return;
+    if (data.len == 0) return;
+    try self.work(data);
+}
+```
+
+### 2. Extract Nested Blocks
+
+Extract any block with 3+ nesting levels into a helper function:
+
+```zig
+// ❌ BAD
+for (items) |item| {
+    if (item.valid) {
+        for (item.children) |child| {
+            // Deep nesting
+        }
+    }
+}
+
+// ✅ GOOD
+for (items) |item| {
+    if (item.valid) {
+        try self.processChildren(item);
+    }
+}
+
+fn processChildren(self: *Self, item: Item) !void {
+    for (item.children) |child| {
+        // Now only 1 level
+    }
+}
+```
+
+### 3. Extract Complex Conditionals
+
+```zig
+// ❌ BAD
+if (fd >= 0 and supports_atomic and has_modifiers) {
+    // ...
+}
+
+// ✅ GOOD
+fn isReady(self: *Self) bool {
+    return self.fd >= 0 and self.supports_atomic and self.has_modifiers;
+}
+
+if (self.isReady()) {
+    // ...
+}
+```
+
+## When to Extract
+
+- Any block with **3+ nesting levels**
+- Loop bodies **>10 lines**
+- Functions **>40 lines**
+- Multiple responsibilities in one function
