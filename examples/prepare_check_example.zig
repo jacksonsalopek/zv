@@ -24,7 +24,7 @@ pub fn main() !void {
     std.debug.print("=============================\n\n", .{});
 
     var loop = try zv.Loop.init(allocator, .{});
-    defer loop.deinit();
+    defer loop.destroy();
 
     // Create a pipe for IO events
     const pipe = try std.posix.pipe();
@@ -34,22 +34,22 @@ pub fn main() !void {
     }
 
     // Prepare watcher - runs BEFORE polling
-    var prepare = zv.prepare.Watcher.init(&loop, prepareCallback);
+    var prepare = zv.prepare.Watcher.init(loop, prepareCallback);
     try prepare.start();
     defer prepare.stop();
 
     // Check watcher - runs AFTER polling
-    var check = zv.check.Watcher.init(&loop, checkCallback);
+    var check = zv.check.Watcher.init(loop, checkCallback);
     try check.start();
     defer check.stop();
 
     // IO watcher - triggers during poll
-    var io = zv.io.Watcher.init(&loop, pipe[0], .read, ioCallback);
+    var io = zv.io.Watcher.init(loop, pipe[0], .read, ioCallback);
     try io.start();
     defer io.stop() catch {};
 
     // Timer to stop after a few iterations
-    var stop_timer = zv.timer.Watcher.init(&loop, zv.time.seconds(2), 0, stopCallback);
+    var stop_timer = zv.timer.Watcher.init(loop, zv.time.seconds(2), 0, stopCallback);
     try stop_timer.start();
     defer stop_timer.stop();
 

@@ -1,208 +1,72 @@
-# zv vs libev Benchmarks
+# zv vs libev benchmarks
 
-This document summarizes the comprehensive benchmark suite comparing zv (our Zig event loop) against libev (the original C implementation).
+The suite compares zv to system libev on the same machine. **It does not publish product scores.** Run it locally and read the methodology banner the harness prints.
 
-## Quick Start
+## Quick start
 
 ```bash
-# Run all benchmarks
+# Requires system libev (benchmark-only; zv itself does not link libev)
 zig build benchmark
-
-# Run specific benchmark
 zig build benchmark -- --name loop-throughput
-zig build benchmark -- --name io-operations
-zig build benchmark -- --name timer-accuracy
-zig build benchmark -- --name memory-usage
-zig build benchmark -- --name scaling
-
-# Get help
 zig build benchmark -- --help
 ```
 
-## Prerequisites
+Install libev first (`libev` on Arch, `libev-dev` on Debian/Ubuntu, `brew install libev` on macOS).
 
-The benchmarks require **libev** to be installed on your system:
+## What is measured
 
-```bash
-# Arch Linux
-sudo pacman -S libev
+| Name | What it times | What it is not |
+|------|----------------|----------------|
+| `loop-throughput` | `run(.nowait)` call rate | Application events/sec. Empty loop does not poll. |
+| `io-operations` | start/modify/stop **plus one nowait** so libev `fd_reify` applies kernel updates | A raw `ev_io_start` vs `Watcher.start` (those are not the same work). |
+| `timer-accuracy` | start cost, 10ms delay, expired-timer dispatch | OS sleep granularity, not "library speed". |
+| `memory-usage` | zv heap via a tracking allocator | libev `malloc` (not observed). |
+| `scaling` | nowait cost vs watcher count | A scalability proof; fd limits skip large N. |
 
-# Ubuntu/Debian
-sudo apt-get install libev-dev
+## Methodology (enforced in code)
 
-# macOS
-brew install libev
-```
+- zv and the harness are **ReleaseFast**; the C wrapper is compiled `-O3 -DNDEBUG`.
+- Both sides use **libc malloc** (`c_allocator` vs libev's `calloc`). GPA is not used.
+- Timings are **median of samples after warmup**, using `CLOCK_MONOTONIC` (not wall-clock `nanoTimestamp`).
+- Watcher **storage is allocated before** the timed region on both sides.
+- zv uses `Backend.selectBest()` (epoll/kqueue/poll). **`select` wait is a stub** (always 0 events) and is not a libev comparison.
+- libev backends are limited to epoll/kqueue/poll (no io_uring), matching zv.
+- Failed start/stop/run **fails the process**; errors are not counted as success.
+- No CPU pinning. Results are noisy and machine-specific.
 
-**Note:** libev is **only** a dependency for benchmarks. The main zv library does not depend on libev.
+## Known unfair or easy-to-misread cases
 
-## Benchmark Architecture
+1. **Empty loop** — both libraries return without polling when there are no watchers. This is API overhead, not `epoll_wait`.
+2. **IO add/modify/remove** — both libraries queue fd changes until `run` (`fd_reify`). Timing `ev_io_start` alone produced fake hundreds-of-millions ops/sec. The suite includes a nowait flush on both sides. Do not cite older add/remove ratios.
+3. **Timer delay** — a 10ms one-shot is dominated by the OS. Early/late samples are all counted (including negative/early). Smaller delay is not "faster".
+4. **Memory** — only zv heap is tracked. Struct `sizeof` is printed for both; that is not RSS.
+5. **zv always has a waker fd** on the backend that libev does not. Idle-IO polls may differ by one fd.
+6. **select backend** — `wait` always returns 0. Do not add or cite a select-vs-libev bench.
 
-### Files Created
+## Do not cite
+
+These claims appeared in older docs and **are not supported** by the current suite:
+
+- "30–45% better than libev"
+- "21–34% faster"
+- "20–30% less memory"
+- canned ops/sec, ±150 ns timer accuracy, or 7% less memory examples
+
+There is no CI job that records baseline numbers. If you need a number, run the suite and report the machine, OS, libev version, and the printed methodology.
+
+## Layout
 
 ```
 src/benchmarks/
-├── root.zig                 # Common utilities (Timer, AllocTracker, Result)
-├── main.zig                 # CLI entry point
-├── libev_wrapper.{c,h}      # C wrapper for libev (benchmark-only)
-├── loop_throughput.zig      # Event loop iteration throughput
-├── io_operations.zig        # IO watcher add/modify/remove operations
-├── timer_accuracy.zig       # Timer scheduling and firing precision
-├── memory_usage.zig         # Memory consumption tracking
-├── scaling.zig              # Performance with increasing watchers
-└── README.md                # Detailed documentation
+├── infra.zig                # Timer, AllocTracker, median-of-samples
+├── root.zig                 # CLI dispatch
+├── main.zig
+├── libev_wrapper.{c,h}
+├── loop_throughput.zig
+├── io_operations.zig
+├── timer_accuracy.zig
+├── memory_usage.zig
+└── scaling.zig
 ```
 
-### Build System Integration
-
-The benchmarks are integrated into `build.zig` as a separate build step that:
-- Links with system libev
-- Compiles C wrapper code
-- Builds with `ReleaseFast` optimization
-- Accepts command-line arguments for selecting specific benchmarks
-
-## What Each Benchmark Measures
-
-### 1. Loop Throughput
-- **Empty loop**: 500,000 iterations with no watchers
-- **Idle IO watchers**: 1,000 registered but inactive file descriptors (50k iterations)
-- **Active timers**: 100 timers with different deadlines (10k iterations)
-
-**Key Metric**: Iterations per second, statistical validity through high iteration counts
-
-### 2. IO Operations
-- **Add**: Creating and registering 5,000 IO watchers
-- **Modify**: Changing events (read/write) on 5,000 watchers (20 modifications each)
-- **Remove**: Unregistering 5,000 watchers
-
-**Key Metrics**: Time per operation, memory allocations, scalability
-
-### 3. Timer Accuracy
-- **Creation**: Overhead of creating and starting 5,000 timers
-- **Latency**: How accurately timers fire (100 samples of 10ms timers)
-- **Repeating**: Performance with 10 repeating timers over 5,000 iterations
-
-**Key Metrics**: Creation overhead, average firing latency, scalability
-
-### 4. Memory Usage
-- **Loop initialization**: Base memory footprint
-- **IO watchers**: Memory per watcher (1,000 watchers)
-- **Timer watchers**: Memory per timer (1,000 timers)
-- **Mixed workload**: 500 IO + 500 timer watchers
-
-**Key Metrics**: Allocations, bytes allocated, peak memory at scale
-
-### 5. Scaling
-- **IO scaling**: Throughput with 10, 50, 100, 500, 1000, 2000, 5000, 10000 watchers (50k iterations each)
-- **Timer scaling**: Throughput with 10, 50, 100, 250, 500, 1000, 2500, 5000 timers (5k iterations each)
-
-**Key Metrics**: Performance ratio at each scale, degradation trends at extreme loads
-
-## Implementation Highlights
-
-### C Wrapper for libev
-- Thin abstraction over libev API
-- Opaque types for type safety
-- Consistent interface for fair comparison
-- **Only compiled for benchmarks** - not linked into main library
-
-### Fair Comparison Methodology
-1. **Same workload**: Both libraries process identical operations
-2. **Optimized builds**: `ReleaseFast` for maximum performance
-3. **Multiple samples**: Statistical validity through repeated runs
-4. **Warmup runs**: Eliminate cold-start effects
-5. **Isolated measurements**: Each benchmark measures only its target operation
-
-### Common Utilities
-
-**Timer**: High-precision timing using `std.time.nanoTimestamp()`
-- Nanosecond resolution
-- Methods for ns/μs/ms conversion
-
-**AllocTracker**: Memory profiling allocator wrapper
-- Tracks allocations, deallocations
-- Monitors bytes allocated/freed
-- Records peak memory usage
-- Compatible with Zig 0.15+ allocator API
-
-**Result**: Standardized benchmark result format
-- Time, throughput, memory metrics
-- Comparison functions with speedup/slowdown calculations
-- Formatted output with percentages
-
-## Design Goals Validated
-
-These benchmarks validate that zv achieves:
-
-1. **Comparable Performance**: Within 5-10% of libev throughput
-2. **Better Memory Safety**: Compile-time guarantees at zero runtime cost
-3. **Lower Memory Usage**: 20-30% less memory through better allocation patterns
-4. **Similar Scaling**: O(n) characteristics match libev
-5. **Type Safety**: Strong typing without performance penalty
-
-## Integration with CI/CD
-
-The benchmarks can be integrated into CI/CD pipelines to:
-- Detect performance regressions
-- Compare before/after optimization
-- Track performance trends over time
-- Validate performance claims
-
-Example CI usage:
-```bash
-# Run benchmarks and save results
-zig build benchmark > benchmark_results.txt
-
-# Compare with baseline (requires custom tooling)
-./scripts/compare_benchmarks.sh baseline.txt benchmark_results.txt
-```
-
-## Future Enhancements
-
-Potential additions to the benchmark suite:
-- Signal handling latency benchmarks
-- Multi-threaded scenarios
-- Real-world workload simulations (HTTP server, etc.)
-- Cross-platform comparisons (Linux epoll vs macOS kqueue)
-- Memory allocation hot path profiling
-- Cache efficiency measurements
-
-## Technical Notes
-
-### Zig 0.15+ Compatibility
-
-The benchmarks are compatible with Zig 0.15+ which introduced breaking changes:
-- New I/O interface requiring explicit buffers
-- `std.mem.Alignment` type for alignment parameters
-- Updated allocator vtable with `remap` function
-- Calling convention changed from `.C` to `.c`
-
-### Global State
-
-Some benchmarks use module-level variables (e.g., `repeat_count`, `latency_fired`) because Zig's timer watchers don't support per-watcher user data. This is acceptable for single-threaded benchmarks.
-
-### Measurement Precision
-
-Timer measurements have nanosecond precision but actual resolution depends on:
-- OS timer granularity (typically 1-100 μs)
-- CPU frequency scaling
-- System load and context switches
-
-For most accurate results:
-- Close other applications
-- Disable CPU frequency scaling if possible
-- Run multiple times and average results
-
-## Contributing
-
-When adding new benchmarks:
-1. Follow established patterns from existing benchmarks
-2. Use common utilities (Timer, AllocTracker, Result)
-3. Test multiple scenarios (simple, realistic, stress)
-4. Include warmup runs
-5. Document what you're measuring and why
-6. Update README and this document
-
-## License
-
-Same as zv - see repository root for license information.
+`zig build test` runs `infra.zig` tests (no libev). Full benches are `zig build benchmark` only.

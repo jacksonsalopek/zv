@@ -46,8 +46,11 @@ const vtable = Backend.VTable{
     .add = addImpl,
     .modify = modifyImpl,
     .remove = removeImpl,
+    .reify = reifyImpl,
     .wait = waitImpl,
 };
+
+fn reifyImpl(_: *anyopaque) Backend.Error!void {}
 
 fn deinitImpl(ptr: *anyopaque) void {
     const self: *Select = @ptrCast(@alignCast(ptr));
@@ -57,7 +60,7 @@ fn deinitImpl(ptr: *anyopaque) void {
     self.allocator.destroy(self);
 }
 
-fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) !void {
+fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) Backend.Error!void {
     const self: *Select = @ptrCast(@alignCast(ptr));
 
     if (fd >= FD_SETSIZE) return error.FdTooLarge;
@@ -68,22 +71,22 @@ fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user
     if (interest.write) {
         try self.write_fds.put(fd, {});
     }
-    
+
     try self.user_data_map.put(fd, user_data);
     self.updateMaxFd();
 }
 
-fn modifyImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !void {
+fn modifyImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) Backend.Error!void {
     const self: *Select = @ptrCast(@alignCast(ptr));
 
-    const user_data = self.user_data_map.get(fd) orelse null;
+    const preserved = user_data orelse (self.user_data_map.get(fd) orelse null);
     _ = self.read_fds.remove(fd);
     _ = self.write_fds.remove(fd);
 
-    return addImpl(ptr, fd, interest, user_data);
+    return addImpl(ptr, fd, interest, preserved);
 }
 
-fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) !void {
+fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) Backend.Error!void {
     const self: *Select = @ptrCast(@alignCast(ptr));
 
     _ = self.read_fds.remove(fd);
@@ -93,7 +96,7 @@ fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) !void {
     self.updateMaxFd();
 }
 
-fn waitImpl(ptr: *anyopaque, events: []Backend.Event, timeout_ns: ?u64) !usize {
+fn waitImpl(ptr: *anyopaque, events: []Backend.Event, timeout_ns: ?u64) Backend.Error!usize {
     const self: *Select = @ptrCast(@alignCast(ptr));
     _ = timeout_ns;
 

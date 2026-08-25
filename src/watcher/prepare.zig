@@ -13,6 +13,7 @@ pub const Watcher = struct {
     callback: Callback,
     active: bool,
 
+    /// Create an inactive watcher; the callback runs before the loop blocks.
     pub fn init(loop: *Loop, callback: Callback) Watcher {
         return .{
             .loop = loop,
@@ -21,6 +22,7 @@ pub const Watcher = struct {
         };
     }
 
+    /// Register to run before the loop blocks waiting for events.
     pub fn start(self: *Watcher) !void {
         if (self.active) return;
 
@@ -28,6 +30,7 @@ pub const Watcher = struct {
         self.active = true;
     }
 
+    /// Stop receiving prepare callbacks. No-op if inactive.
     pub fn stop(self: *Watcher) void {
         if (!self.active) return;
 
@@ -35,6 +38,7 @@ pub const Watcher = struct {
         self.active = false;
     }
 
+    /// Called by the loop to dispatch `callback`.
     pub fn invoke(self: *Watcher) void {
         self.callback(self);
     }
@@ -43,8 +47,8 @@ pub const Watcher = struct {
 test "prepare watcher init" {
     const testing = std.testing;
 
-    var loop = try Loop.init(testing.allocator, .{});
-    defer loop.deinit();
+    const loop = try Loop.init(testing.allocator, .{});
+    defer loop.destroy();
 
     const DummyCallback = struct {
         fn callback(watcher: *Watcher) void {
@@ -52,6 +56,43 @@ test "prepare watcher init" {
         }
     };
 
-    const watcher = Watcher.init(&loop, DummyCallback.callback);
+    const watcher = Watcher.init(loop, DummyCallback.callback);
     try testing.expect(!watcher.active);
+}
+
+test "prepare callback can start a timer" {
+    const testing = std.testing;
+    const time = @import("../time.zig");
+    const TimerWatcher = @import("timer.zig").Watcher;
+
+    const TestState = struct {
+        var timer_started: bool = false;
+        var timer_fired: bool = false;
+        var timer: TimerWatcher = undefined;
+
+        fn prepareCb(watcher: *Watcher) void {
+            if (timer_started) return;
+            timer = TimerWatcher.init(watcher.loop, time.milliseconds(1), 0, timerCb);
+            timer.start() catch return;
+            timer_started = true;
+        }
+
+        fn timerCb(watcher: *TimerWatcher) void {
+            _ = watcher;
+            timer_fired = true;
+        }
+    };
+    TestState.timer_started = false;
+    TestState.timer_fired = false;
+
+    const loop = try Loop.init(testing.allocator, .{});
+    defer loop.destroy();
+
+    var prepare_watcher = Watcher.init(loop, TestState.prepareCb);
+    try prepare_watcher.start();
+    defer prepare_watcher.stop();
+
+    try loop.run(.until_done);
+    try testing.expect(TestState.timer_started);
+    try testing.expect(TestState.timer_fired);
 }

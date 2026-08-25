@@ -2,8 +2,8 @@
 #include <ev.h>
 #include <stdlib.h>
 
-// Loop operations
 libev_loop* libev_loop_new(void) {
+    /* Match zv's backend set: epoll/kqueue/poll. Do not enable io_uring/linuxaio. */
     return (libev_loop*)ev_loop_new(EVBACKEND_EPOLL | EVBACKEND_KQUEUE | EVBACKEND_POLL);
 }
 
@@ -27,9 +27,20 @@ double libev_loop_now(libev_loop* loop) {
     return ev_now((struct ev_loop*)loop);
 }
 
-// IO watcher operations
-libev_io* libev_io_new(void) {
-    return (libev_io*)malloc(sizeof(struct ev_io));
+size_t libev_io_sizeof(void) {
+    return sizeof(struct ev_io);
+}
+
+libev_io* libev_io_alloc_array(size_t n) {
+    return (libev_io*)calloc(n, sizeof(struct ev_io));
+}
+
+void libev_io_free_array(libev_io* base) {
+    free(base);
+}
+
+libev_io* libev_io_nth(libev_io* base, size_t i) {
+    return (libev_io*)((struct ev_io*)base + i);
 }
 
 void libev_io_init(libev_io* watcher, void (*callback)(libev_loop*, libev_io*, int), int fd, int events) {
@@ -48,13 +59,24 @@ void libev_io_modify(libev_io* watcher, int events) {
     ev_io_modify((struct ev_io*)watcher, events);
 }
 
-void libev_io_destroy(libev_io* watcher) {
-    free(watcher);
+void libev_io_set(libev_io* watcher, int fd, int events) {
+    ev_io_set((struct ev_io*)watcher, fd, events);
 }
 
-// Timer watcher operations
-libev_timer* libev_timer_new(void) {
-    return (libev_timer*)malloc(sizeof(struct ev_timer));
+size_t libev_timer_sizeof(void) {
+    return sizeof(struct ev_timer);
+}
+
+libev_timer* libev_timer_alloc_array(size_t n) {
+    return (libev_timer*)calloc(n, sizeof(struct ev_timer));
+}
+
+void libev_timer_free_array(libev_timer* base) {
+    free(base);
+}
+
+libev_timer* libev_timer_nth(libev_timer* base, size_t i) {
+    return (libev_timer*)((struct ev_timer*)base + i);
 }
 
 void libev_timer_init(libev_timer* watcher, void (*callback)(libev_loop*, libev_timer*, int), double after, double repeat) {
@@ -73,11 +95,6 @@ void libev_timer_again(libev_loop* loop, libev_timer* watcher) {
     ev_timer_again((struct ev_loop*)loop, (struct ev_timer*)watcher);
 }
 
-void libev_timer_destroy(libev_timer* watcher) {
-    free(watcher);
-}
-
-// Signal watcher operations
 libev_signal* libev_signal_new(void) {
     return (libev_signal*)malloc(sizeof(struct ev_signal));
 }

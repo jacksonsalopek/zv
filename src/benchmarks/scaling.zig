@@ -1,252 +1,239 @@
-//! Scaling Characteristics Benchmark
+//! Scaling: `run(.nowait)` cost vs watcher count.
 //!
-//! Measures performance degradation with increasing numbers of watchers.
+//! Skips scales that would exceed the process file-descriptor limit.
 
 const std = @import("std");
 const zv = @import("zv");
-const benchmarks = @import("root.zig");
-const Timer = benchmarks.Timer;
-const Result = benchmarks.Result;
+const benchmarks = @import("infra.zig");
 
 const c = @cImport({
     @cInclude("libev_wrapper.h");
 });
 
+const warmup_count = 1;
+const sample_count = 3;
+
+const Scale = struct {
+    n: usize,
+    iters: usize,
+};
+
+const io_scales = [_]Scale{
+    .{ .n = 10, .iters = 10_000 },
+    .{ .n = 50, .iters = 10_000 },
+    .{ .n = 100, .iters = 8_000 },
+    .{ .n = 500, .iters = 4_000 },
+    .{ .n = 1000, .iters = 2_000 },
+    .{ .n = 2000, .iters = 1_000 },
+    .{ .n = 5000, .iters = 500 },
+    .{ .n = 10000, .iters = 250 },
+};
+
+const timer_scales = [_]Scale{
+    .{ .n = 10, .iters = 8_000 },
+    .{ .n = 50, .iters = 4_000 },
+    .{ .n = 100, .iters = 2_000 },
+    .{ .n = 250, .iters = 1_000 },
+    .{ .n = 500, .iters = 500 },
+    .{ .n = 1000, .iters = 250 },
+    .{ .n = 2500, .iters = 100 },
+    .{ .n = 5000, .iters = 50 },
+};
+
+fn dummyIo(_: *zv.io.Watcher, _: zv.Backend.EventMask) void {}
+fn dummyTimer(_: *zv.timer.Watcher) void {}
+fn libevDummyIo(_: ?*c.libev_loop, _: ?*c.libev_io, _: c_int) callconv(.c) void {}
+fn libevDummyTimer(_: ?*c.libev_loop, _: ?*c.libev_timer, _: c_int) callconv(.c) void {}
+
 pub fn run(allocator: std.mem.Allocator, writer: anytype) !void {
     try writer.writeAll("\n");
     try writer.writeAll("=" ** 50);
-    try writer.writeAll("\n");
-    try writer.writeAll("Scaling Characteristics Benchmark\n");
+    try writer.writeAll("\nScaling Characteristics\n");
     try writer.writeAll("=" ** 50);
-    try writer.writeAll("\n\n");
+    try writer.writeAll("\n\nMedian nowait-run time. Ratio is zv_time / libev_time.\n");
 
-    try writer.writeAll("Testing throughput with increasing IO watchers:\n");
-    try benchmarkIoScaling(allocator, writer);
+    try writer.writeAll("\nIdle IO watchers:\n");
+    try writer.writeAll("Count | iters | zv (ms) | libev (ms) | note\n");
+    try writer.writeAll("----- | ----- | ------- | ---------- | ----\n");
+    try runIoScales(allocator, writer);
 
-    try writer.writeAll("\n");
-    try writer.writeAll("Testing throughput with increasing timers:\n");
-    try benchmarkTimerScaling(allocator, writer);
+    try writer.writeAll("\nFar-future timers:\n");
+    try writer.writeAll("Count | iters | zv (ms) | libev (ms) | note\n");
+    try writer.writeAll("----- | ----- | ------- | ---------- | ----\n");
+    try runTimerScales(allocator, writer);
 
-    try writer.writeAll("\n✓ Scaling benchmark completed!\n");
+    try writer.writeAll("\nScaling benchmark completed.\n");
 }
 
-fn benchmarkIoScaling(allocator: std.mem.Allocator, writer: anytype) !void {
-    const scales = [_]usize{ 10, 50, 100, 500, 1000, 2000, 5000, 10000 };
-    const iterations: usize = 50000;
+fn fdLimit() usize {
+    const lim = std.posix.getrlimit(.NOFILE) catch return 1024;
+    return @intCast(lim.cur);
+}
 
-    try writer.writeAll("\nWatcher Count | zv (ms) | libev (ms) | Comparison\n");
-    try writer.writeAll("------------- | ------- | ---------- | ----------\n");
+fn canOpenPipes(n: usize) bool {
+    // 2 fds per pipe plus headroom for epoll/waker/stdio.
+    return n * 2 + 64 < fdLimit();
+}
 
-    for (scales) |num_watchers| {
-        const zv_result = try benchmarkZvIoScale(allocator, num_watchers, iterations);
-        const libev_result = try benchmarkLibevIoScale(num_watchers, iterations);
-
-        const zv_ms = @as(f64, @floatFromInt(zv_result.time_ns)) / 1_000_000.0;
-        const libev_ms = @as(f64, @floatFromInt(libev_result.time_ns)) / 1_000_000.0;
-
-        const ratio = zv_ms / libev_ms;
-        const comparison = if (ratio < 1.0) "faster" else if (ratio > 1.0) "slower" else "equal";
-
-        try writer.print("{d:>13} | {d:>7.2} | {d:>10.2} | {d:.2}x {s}\n", .{
-            num_watchers,
-            zv_ms,
-            libev_ms,
-            @abs(ratio),
-            comparison,
-        });
+fn closePipes(pipes: [][2]std.posix.fd_t) void {
+    for (pipes) |p| {
+        std.posix.close(p[0]);
+        std.posix.close(p[1]);
     }
 }
 
-fn benchmarkZvIoScale(allocator: std.mem.Allocator, num_watchers: usize, iterations: usize) !Result {
-    var loop = try zv.Loop.init(allocator, .{});
-    defer loop.deinit();
+fn formatNote(zv_ns: u64, libev_ns: u64) []const u8 {
+    if (libev_ns == 0) return "n/a";
+    if (zv_ns < libev_ns) return "zv faster";
+    if (zv_ns > libev_ns) return "zv slower";
+    return "equal";
+}
 
-    const pipes = try allocator.alloc([2]std.posix.fd_t, num_watchers);
+fn printRow(writer: anytype, n: usize, iters: usize, zv_ns: u64, libev_ns: u64) !void {
+    const zv_ms = @as(f64, @floatFromInt(zv_ns)) / 1_000_000.0;
+    const libev_ms = @as(f64, @floatFromInt(libev_ns)) / 1_000_000.0;
+    const ratio = if (libev_ns == 0) 0.0 else @as(f64, @floatFromInt(zv_ns)) / @as(f64, @floatFromInt(libev_ns));
+    try writer.print("{d:>5} | {d:>5} | {d:>7.2} | {d:>10.2} | {d:.2}x {s}\n", .{
+        n,
+        iters,
+        zv_ms,
+        libev_ms,
+        ratio,
+        formatNote(zv_ns, libev_ns),
+    });
+}
+
+fn runIoScales(allocator: std.mem.Allocator, writer: anytype) !void {
+    for (io_scales) |scale| {
+        if (!canOpenPipes(scale.n)) {
+            try writer.print("{d:>5} | skip (fd limit {d})\n", .{ scale.n, fdLimit() });
+            continue;
+        }
+        const zv_ns = try benchZvIo(allocator, scale);
+        const libev_ns = try benchLibevIo(allocator, scale);
+        try printRow(writer, scale.n, scale.iters, zv_ns, libev_ns);
+    }
+}
+
+const NowaitCtx = struct { loop: *zv.Loop, iters: usize };
+const LibevNowaitCtx = struct { loop: *c.libev_loop, iters: usize };
+
+fn zvNowait(ctx: NowaitCtx) !void {
+    var i: usize = 0;
+    while (i < ctx.iters) : (i += 1) try ctx.loop.run(.nowait);
+}
+
+fn libevNowait(ctx: LibevNowaitCtx) !void {
+    var i: usize = 0;
+    while (i < ctx.iters) : (i += 1) c.libev_loop_run(ctx.loop, c.LIBEV_RUN_NOWAIT);
+}
+
+fn benchZvIo(allocator: std.mem.Allocator, scale: Scale) !u64 {
+    const loop = try zv.Loop.init(allocator, .{ .initial_watcher_capacity = scale.n });
+    defer loop.destroy();
+    const pipes = try allocator.alloc([2]std.posix.fd_t, scale.n);
     defer allocator.free(pipes);
+    for (pipes) |*p| p.* = try std.posix.pipe();
+    defer closePipes(pipes);
 
-    const watchers = try allocator.alloc(zv.io.Watcher, num_watchers);
+    const watchers = try allocator.alloc(zv.io.Watcher, scale.n);
     defer allocator.free(watchers);
-
-    for (pipes, 0..) |*p, i| {
-        p.* = try std.posix.pipe();
-        watchers[i] = zv.io.Watcher.init(&loop, p[0], .read, dummyCallback);
+    for (pipes, 0..) |p, i| {
+        watchers[i] = zv.io.Watcher.init(loop, p[0], .read, dummyIo);
         try watchers[i].start();
     }
-
     defer {
-        for (watchers) |*w| _ = w.stop() catch {};
-        for (pipes) |p| {
-            std.posix.close(p[0]);
-            std.posix.close(p[1]);
-        }
+        for (watchers) |*w| w.stop() catch {};
     }
 
-    var timer = try Timer.start();
-    var i: usize = 0;
-    while (i < iterations) : (i += 1) {
-        _ = try loop.run(.nowait);
-    }
-    const elapsed = timer.read();
-
-    return Result{
-        .name = "zv",
-        .time_ns = elapsed,
-        .iterations = iterations,
-    };
+    const stats = try benchmarks.measure(allocator, warmup_count, sample_count, NowaitCtx{
+        .loop = loop,
+        .iters = scale.iters,
+    }, zvNowait);
+    return stats.median_ns;
 }
 
-fn dummyCallback(_: *zv.io.Watcher, _: zv.Backend.EventMask) void {}
-
-fn benchmarkLibevIoScale(num_watchers: usize, iterations: usize) !Result {
+fn benchLibevIo(allocator: std.mem.Allocator, scale: Scale) !u64 {
     const loop = c.libev_loop_new() orelse return error.LoopCreationFailed;
     defer c.libev_loop_destroy(loop);
+    const pipes = try allocator.alloc([2]std.posix.fd_t, scale.n);
+    defer allocator.free(pipes);
+    for (pipes) |*p| p.* = try std.posix.pipe();
+    defer closePipes(pipes);
 
-    const pipes = try std.heap.c_allocator.alloc([2]std.posix.fd_t, num_watchers);
-    defer std.heap.c_allocator.free(pipes);
-
-    const watchers = try std.heap.c_allocator.alloc(?*c.libev_io, num_watchers);
-    defer std.heap.c_allocator.free(watchers);
-
-    for (pipes, 0..) |*p, i| {
-        p.* = try std.posix.pipe();
-        const w = c.libev_io_new() orelse return error.WatcherCreationFailed;
-        c.libev_io_init(w, libevDummyCallback, p[0], c.LIBEV_READ);
-        c.libev_io_start(loop, w);
-        watchers[i] = w;
-    }
-
-    defer {
-        for (watchers) |w| {
-            if (w) |watcher| {
-                c.libev_io_stop(loop, watcher);
-                c.libev_io_destroy(watcher);
-            }
-        }
-        for (pipes) |p| {
-            std.posix.close(p[0]);
-            std.posix.close(p[1]);
-        }
-    }
-
-    var timer = try Timer.start();
+    const storage = c.libev_io_alloc_array(scale.n) orelse return error.WatcherCreationFailed;
+    defer c.libev_io_free_array(storage);
     var i: usize = 0;
-    while (i < iterations) : (i += 1) {
-        c.libev_loop_run(loop, c.LIBEV_RUN_NOWAIT);
+    while (i < scale.n) : (i += 1) {
+        const w = c.libev_io_nth(storage, i);
+        c.libev_io_init(w, libevDummyIo, pipes[i][0], c.LIBEV_READ);
+        c.libev_io_start(loop, w);
     }
-    const elapsed = timer.read();
+    defer {
+        var j: usize = 0;
+        while (j < scale.n) : (j += 1) {
+            c.libev_io_stop(loop, c.libev_io_nth(storage, j));
+        }
+    }
 
-    return Result{
-        .name = "libev",
-        .time_ns = elapsed,
-        .iterations = iterations,
-    };
+    const stats = try benchmarks.measure(allocator, warmup_count, sample_count, LibevNowaitCtx{
+        .loop = loop,
+        .iters = scale.iters,
+    }, libevNowait);
+    return stats.median_ns;
 }
 
-fn libevDummyCallback(_: ?*c.libev_loop, _: ?*c.libev_io, _: c_int) callconv(.c) void {}
-
-fn benchmarkTimerScaling(allocator: std.mem.Allocator, writer: anytype) !void {
-    const scales = [_]usize{ 10, 50, 100, 250, 500, 1000, 2500, 5000 };
-    const iterations: usize = 5000;
-
-    try writer.writeAll("\nTimer Count   | zv (ms) | libev (ms) | Comparison\n");
-    try writer.writeAll("------------- | ------- | ---------- | ----------\n");
-
-    for (scales) |num_timers| {
-        const zv_result = try benchmarkZvTimerScale(allocator, num_timers, iterations);
-        const libev_result = try benchmarkLibevTimerScale(num_timers, iterations);
-
-        const zv_ms = @as(f64, @floatFromInt(zv_result.time_ns)) / 1_000_000.0;
-        const libev_ms = @as(f64, @floatFromInt(libev_result.time_ns)) / 1_000_000.0;
-
-        const ratio = zv_ms / libev_ms;
-        const comparison = if (ratio < 1.0) "faster" else if (ratio > 1.0) "slower" else "equal";
-
-        try writer.print("{d:>13} | {d:>7.2} | {d:>10.2} | {d:.2}x {s}\n", .{
-            num_timers,
-            zv_ms,
-            libev_ms,
-            @abs(ratio),
-            comparison,
-        });
+fn runTimerScales(allocator: std.mem.Allocator, writer: anytype) !void {
+    for (timer_scales) |scale| {
+        const zv_ns = try benchZvTimers(allocator, scale);
+        const libev_ns = try benchLibevTimers(allocator, scale);
+        try printRow(writer, scale.n, scale.iters, zv_ns, libev_ns);
     }
 }
 
-fn benchmarkZvTimerScale(allocator: std.mem.Allocator, num_timers: usize, iterations: usize) !Result {
-    var loop = try zv.Loop.init(allocator, .{});
-    defer loop.deinit();
-
-    const watchers = try allocator.alloc(zv.timer.Watcher, num_timers);
+fn benchZvTimers(allocator: std.mem.Allocator, scale: Scale) !u64 {
+    const loop = try zv.Loop.init(allocator, .{});
+    defer loop.destroy();
+    const watchers = try allocator.alloc(zv.timer.Watcher, scale.n);
     defer allocator.free(watchers);
-
+    const hour_ns: u64 = 3_600 * std.time.ns_per_s;
     for (watchers, 0..) |*w, i| {
-        const timeout_ns = (i + 1) * 10_000_000;
-        w.* = zv.timer.Watcher.init(&loop, timeout_ns, 0, timerCallback);
+        w.* = zv.timer.Watcher.init(loop, hour_ns + i, 0, dummyTimer);
         try w.start();
     }
-
     defer {
         for (watchers) |*w| w.stop();
     }
 
-    var timer = try Timer.start();
-    var i: usize = 0;
-    while (i < iterations) : (i += 1) {
-        _ = try loop.run(.nowait);
-    }
-    const elapsed = timer.read();
-
-    return Result{
-        .name = "zv",
-        .time_ns = elapsed,
-        .iterations = iterations,
-    };
+    const stats = try benchmarks.measure(allocator, warmup_count, sample_count, NowaitCtx{
+        .loop = loop,
+        .iters = scale.iters,
+    }, zvNowait);
+    return stats.median_ns;
 }
 
-fn timerCallback(_: *zv.timer.Watcher) void {}
-
-fn benchmarkLibevTimerScale(num_timers: usize, iterations: usize) !Result {
+fn benchLibevTimers(allocator: std.mem.Allocator, scale: Scale) !u64 {
     const loop = c.libev_loop_new() orelse return error.LoopCreationFailed;
     defer c.libev_loop_destroy(loop);
-
-    const watchers = try std.heap.c_allocator.alloc(?*c.libev_timer, num_timers);
-    defer std.heap.c_allocator.free(watchers);
-
-    for (watchers, 0..) |*w, i| {
-        const timeout_sec = @as(f64, @floatFromInt((i + 1) * 10)) / 1000.0;
-        const t = c.libev_timer_new() orelse return error.WatcherCreationFailed;
-        c.libev_timer_init(t, libevTimerCallback, timeout_sec, 0);
+    const storage = c.libev_timer_alloc_array(scale.n) orelse return error.WatcherCreationFailed;
+    defer c.libev_timer_free_array(storage);
+    var i: usize = 0;
+    while (i < scale.n) : (i += 1) {
+        const t = c.libev_timer_nth(storage, i);
+        c.libev_timer_init(t, libevDummyTimer, 3600.0 + @as(f64, @floatFromInt(i)), 0);
         c.libev_timer_start(loop, t);
-        w.* = t;
     }
-
     defer {
-        for (watchers) |w| {
-            if (w) |t| {
-                c.libev_timer_stop(loop, t);
-                c.libev_timer_destroy(t);
-            }
+        var j: usize = 0;
+        while (j < scale.n) : (j += 1) {
+            c.libev_timer_stop(loop, c.libev_timer_nth(storage, j));
         }
     }
 
-    var timer = try Timer.start();
-    var i: usize = 0;
-    while (i < iterations) : (i += 1) {
-        c.libev_loop_run(loop, c.LIBEV_RUN_NOWAIT);
-    }
-    const elapsed = timer.read();
-
-    return Result{
-        .name = "libev",
-        .time_ns = elapsed,
-        .iterations = iterations,
-    };
+    const stats = try benchmarks.measure(allocator, warmup_count, sample_count, LibevNowaitCtx{
+        .loop = loop,
+        .iters = scale.iters,
+    }, libevNowait);
+    return stats.median_ns;
 }
 
-fn libevTimerCallback(_: ?*c.libev_loop, _: ?*c.libev_timer, _: c_int) callconv(.c) void {}
-
-test "benchmark runs" {
-    const testing = std.testing;
-    var buf: [8192]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try run(testing.allocator, fbs.writer());
-}

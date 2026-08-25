@@ -1,246 +1,61 @@
 # Security Considerations for zv
 
-This document outlines security considerations when using zv in production systems.
+This document describes the security model implied by the current code. It does not invent mitigations that are not implemented.
 
-## Current Security Posture
+## Strengths
 
-### ✅ Strong Points
+**Memory and types.** Callers pass a Zig allocator; the core library does not use `malloc` directly. Watcher callbacks are typed function pointers. Internal backend `user_data` is `?*anyopaque` set by zv when registering with the kernel, then recovered with `@ptrCast(@alignCast)` in `Loop.iterate`.
 
-**1. Memory Safety**
-- Zig's compile-time checks prevent many memory errors
-- Explicit allocator management (no hidden allocations)
-- No use-after-free possible with proper ownership
-- Bounds checking on array access
+**Errors.** Syscall and registration failures use error unions. Cleanup paths may ignore errors (`catch {}`) when tearing down fds or handlers. On epoll/kqueue, kernel fd registration (`epoll_ctl` / `kevent`) is deferred until `run`; those errors return from `run`, not from `IoWatcher.start`. Duplicate IO watchers for the same fd still fail at `start` (`error.AlreadyExists`).
 
-**2. Error Handling**
-- All errors explicitly handled via Zig error unions
-- No silent failures or error suppression
-- Syscall errors properly propagated
+**Signals.** `signal.Watcher` uses `sigaction`, a self-pipe, and a process-wide atomic registry. The trampoline loads only an atomic write-fd and writes the signal number (raw `write` on Linux). It does not dereference the watcher. `stop`/`deinit` restore the previous handler. Duplicate watchers for the same signal return `error.SignalAlreadyWatched`. Windows returns `error.UnsupportedOnWindows`.
 
-**3. Type Safety**
-- Strong typing prevents many common C vulnerabilities
-- No void* casting without explicit user acknowledgment
-- Compile-time validation of data structure layouts
+## Thread-safety contract
 
-## ⚠️ Potential Security Concerns
+Matches `src/loop.zig` and [THREAD_SAFETY_ANALYSIS.md](./THREAD_SAFETY_ANALYSIS.md). This is the libev model, not a fully thread-safe loop.
 
-### 1. Integer Overflow in Type Conversions
+**Safe from any thread** (while the loop is alive):
 
-**Location**: Multiple `@intCast` operations throughout codebase
+- `wakeup()` and `requestBreak()` (Linux `eventfd`, otherwise a pipe; extra wakes coalesce on eventfd).
+- `now()` / `updateTime()` via `std.atomic.Value`.
+- One thread in `run()` (`running` atomic; `error.AlreadyRunning` otherwise). Nested `run` is not supported.
 
-**Risk**: File descriptor or timeout values could overflow on conversion
+**Loop thread only:**
 
-```zig
-// backend/kqueue.zig:56
-.ident = @intCast(fd),  // fd_t -> kevent.ident
+- Watcher `start` / `stop` / `modify` / `again` (`active` is a plain `bool`; backend `add`/`remove`/`wait` are not under the loop mutex).
+- `deinit` / `destroy`.
+- Concurrent `start`/`stop` on the **same** watcher, or from a non-run thread, is unsupported.
 
-// backend/epoll.zig:83
-break :blk @intCast(@min(ms, std.math.maxInt(i32)));  // Protected
+The loop mutex serializes collection updates so prepare/check/timer callbacks can start/stop watchers without deadlock. It does **not** make `start`/`stop` safe from other threads (poll/select mutate user-space state; dispatch can UAF).
 
-// time.zig:12
-return @intCast(std.time.nanoTimestamp());  // i128 -> u64
-```
+**Practical pattern:** one loop per thread. Other threads only `wakeup()` / `requestBreak()`. Watchers must stay alive until their callback returns.
 
-**Mitigation**:
-- Most casts are protected with `@min(value, maxInt(T))`
-- File descriptors are system-limited (<1M on most systems)
-- Consider adding runtime validation for user-provided values
+The internal `Waker` type is not part of the public `root.zig` API.
 
-**Severity**: Low (system limits prevent most overflow scenarios)
+## Resource limits
 
-### 2. Incomplete Signal Handling Implementation
+There is no `max_watchers` option. Watcher count is bounded by memory and OS file-descriptor limits (`ulimit -n`). The select backend rejects fds `>= 1024` (`error.FdTooLarge`).
 
-**Location**: `src/watcher/signal.zig`
+Loop `Options.max_events` sizes the loop’s event buffer (default 64). The epoll backend also caps a wait at 64 events internally.
 
-**Issue**: Signal watcher creates pipe but **doesn't actually register signal handlers**
+## Integer conversion
 
-```zig
-pub fn start(self: *Watcher) !void {
-    const fds = try std.posix.pipe();  // Creates pipe
-    // ❌ Missing: sigaction() to register signal handler
-    // ❌ Missing: Write to pipe from signal handler
-    self.pipe_fds = .{ .read = fds[0], .write = fds[1] };
-}
-```
+`@intCast` is used for fds (kqueue `ident`), timeouts (epoll/poll/`select` millisecond caps use `@min` where noted), and `time.now()` (`i128` → `u64`). Extreme user-supplied fds or timeouts can still overflow a cast. Nanosecond timestamps wrap after ~584 years.
 
-**Risk**:
-- Signal watcher appears to work but never receives signals
-- False sense of security in signal-handling code
-- Resource leak (pipe fds not used)
+## Pointer recovery
 
-**Mitigation Needed**:
-- Implement proper signal handler registration using `sigaction()`
-- Use self-pipe trick to make signals work with event loop
-- Document that signal handling is not production-ready
-
-**Severity**: **High** (broken functionality, misleading API)
-
-### 3. File Descriptor Exhaustion
-
-**Risk**: No limit on number of watchers
-
-**Attack Vector**:
-```zig
-// Attacker could exhaust file descriptors
-while (true) {
-    var watcher = io.Watcher.init(&loop, fd, .read, callback);
-    try watcher.start();  // Eventually hits ulimit
-}
-```
-
-**Mitigation**:
-- Document maximum watcher limits
-- Consider adding optional max_watchers limit in Loop.Options
-- Rely on OS ulimit as defense
-
-**Severity**: Medium (DoS possible, but requires application misuse)
-
-### 4. Pointer Cast Safety
-
-**Location**: Event dispatch in `loop.zig`
+Event dispatch does:
 
 ```zig
 const watcher: *IoWatcher = @ptrCast(@alignCast(user_data));
 ```
 
-**Risk**: If user_data is corrupted, this could crash or execute arbitrary code
+`user_data` is set by zv, not by application code. Corruption of that pointer is undefined behavior. Do not free a watcher while it may still be dispatched.
 
-**Mitigation**:
-- user_data is always set by zv internally (not user-provided)
-- Alignment is guaranteed by allocator
-- Type is guaranteed by registration flow
+## Comparison with libev
 
-**Severity**: Low (internal-only, controlled flow)
-
-### 5. Time-Based Integer Overflow
-
-**Location**: `src/time.zig`
-
-```zig
-pub fn now() Timestamp {
-    return @intCast(std.time.nanoTimestamp());  // i128 -> u64
-}
-```
-
-**Risk**: Year 2554 problem (u64 nanoseconds overflow in ~584 years)
-
-**Mitigation**:
-- Sufficient for practical use
-- Document the limitation
-- Consider i64 for relative time calculations
-
-**Severity**: Very Low (584 years until overflow)
-
-### 6. Race Conditions in Signal Handler (if implemented)
-
-**Future Risk**: When signal handling is properly implemented
-
-**Issue**: Signal handlers run asynchronously and have restrictions:
-- Only async-signal-safe functions allowed
-- Cannot allocate memory
-- Cannot acquire locks
-- Must use atomic operations
-
-**Mitigation**:
-- Use self-pipe trick (write single byte to pipe)
-- Keep signal handler minimal
-- Document signal safety requirements
-
-**Severity**: **High** (when signal handling is implemented)
-
-## Recommended Actions
-
-### Critical Priority
-
-1. **Fix or Remove Signal Watcher**
-   - Current implementation is non-functional and misleading
-   - Either implement properly or document as experimental
-
-2. **Validate Signal Handler Safety** (when implemented)
-   - Ensure async-signal-safe operations only
-   - Use atomic operations for shared state
-   - Comprehensive testing
-
-### Medium Priority
-
-3. **Add Watcher Limit Option**
-   ```zig
-   pub const Options = struct {
-       max_watchers: ?usize = null,  // Optional limit
-       // ...
-   };
-   ```
-
-4. **Document Security Limits**
-   - Maximum file descriptors (OS-dependent)
-   - Timer overflow behavior (year 2554)
-   - Thread safety (currently single-threaded only)
-
-### Low Priority
-
-5. **Consider Defensive Casts**
-   ```zig
-   // Instead of @intCast(fd)
-   const ident: usize = std.math.cast(usize, fd) orelse return error.FdTooLarge;
-   ```
-
-6. **Add Fuzzing Tests**
-   - Test with extreme values
-   - Random fd values
-   - Very large timeout values
-
-## Thread Safety
-
-**Current State**: ❌ **Not thread-safe**
-
-- No synchronization primitives
-- Shared mutable state (Loop, watchers)
-- Syscalls not atomic across threads
-
-**If multi-threading is needed:**
-- One Loop per thread (recommended)
-- External synchronization if sharing Loop
-- Document thread-safety guarantees explicitly
-
-## Resource Limits
-
-**System Limits Applied:**
-- File descriptors: Limited by `ulimit -n` (typically 1024-65535)
-- Memory: Limited by system RAM
-- Timers: Limited only by memory
-
-**Recommendations:**
-- Document expected resource usage
-- Provide examples of resource cleanup
-- Test with resource exhaustion scenarios
-
-## Comparison with libev Security
-
-| Aspect | libev | zv |
-|--------|-------|-----|
-| Memory safety | Manual (unsafe) | Zig-guaranteed (safe) |
-| Buffer overflows | Possible | Prevented by compiler |
-| Use-after-free | Possible | Prevented by compiler |
-| Integer overflows | Unchecked | Mostly checked |
-| Signal handling | Production-ready | **Incomplete** ⚠️ |
-| Type safety | Weak (void*) | Strong (generic types) |
+Zig prevents many C memory-safety bugs at compile time. Signal handling is intended to be production-usable on Unix (self-pipe + `sigaction`). zv does not add sandboxing, fd quotas, or a multi-threaded `run`.
 
 ## Disclosure
 
-If you discover security vulnerabilities in zv, please report them via GitHub issues or security advisory.
-
-## Conclusion
-
-**Overall Security**: Good for IO and timer workloads, **not production-ready for signal handling**.
-
-**Strengths**:
-- Zig's memory safety eliminates entire classes of vulnerabilities
-- Explicit error handling
-- No hidden allocations or state
-
-**Weaknesses**:
-- Signal handling incomplete/non-functional
-- No thread safety guarantees
-- Some unchecked integer conversions
-
-zv is **safer than libev** for memory-related vulnerabilities but requires signal handling completion before production use with signals.
+Report vulnerabilities via GitHub issues or advisories on [jacksonsalopek/zv](https://github.com/jacksonsalopek/zv).

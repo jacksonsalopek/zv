@@ -1,0 +1,34 @@
+---
+description: Always run zig build test with timeout <10s
+alwaysApply: true
+---
+
+# Test Timeout Enforcement
+
+Always run `zig build test` with the `timeout` command set to less than 10 seconds to catch hanging tests early.
+
+## Usage
+
+```bash
+# ❌ BAD - No timeout
+zig build test
+
+# ✅ GOOD - With timeout
+timeout 10s zig build test
+```
+
+## Shell Tool
+
+When using the Shell tool to run tests, wrap with `timeout`:
+
+```
+Shell(command: "timeout 10s zig build test", block_until_ms: 11000)
+```
+
+Note: Set `block_until_ms` slightly higher than the timeout value to allow the timeout command to terminate gracefully.
+
+## Rationale
+
+- Prevents tests from hanging indefinitely
+- Provides fast feedback during development
+- Catches deadlocks and infinite loops quickly

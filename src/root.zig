@@ -1,20 +1,23 @@
-//! zv - A Zig port of libev with better memory safety and smaller footprint
+//! zv — Zig event loop (libev-inspired subset)
 //!
-//! This library provides a high-performance event loop with support for:
-//! - Multiple backends (epoll, kqueue, poll, select)
-//! - IO watchers for monitoring file descriptors
-//! - Timer watchers for time-based events
-//! - Signal watchers for handling Unix signals
+//! Backends: epoll, kqueue, poll (`selectBest`); `select` exists but `wait` is a stub.
+//! Watchers: IO, timer, signal (Unix), prepare, check.
+//! `Loop.init` heap-allocates; call `destroy()` to free. `wakeup()` and
+//! `requestBreak()` may interrupt a blocked wait from another thread.
+//! Watcher start/stop and `run` are loop-thread only.
 //!
-//! Example usage:
+//! Example:
 //! ```zig
 //! const zv = @import("zv");
 //!
-//! var loop = try zv.Loop.init(allocator, .{});
-//! defer loop.deinit();
+//! const loop = try zv.Loop.init(allocator, .{});
+//! defer loop.destroy();
 //!
-//! var io = zv.io.Watcher.init(&loop, fd, .read, callback);
+//! var io = zv.io.Watcher.init(loop, fd, .read, ioCallback);
 //! try io.start();
+//!
+//! var sig = zv.signal.Watcher.init(loop, std.posix.SIG.INT, signalCallback);
+//! try sig.start();
 //!
 //! try loop.run(.until_done);
 //! ```
@@ -78,19 +81,19 @@ test "prepare and check watchers" {
     TestState.check_called = false;
     TestState.timer_called = false;
 
-    var loop = try Loop.init(testing.allocator, .{});
-    defer loop.deinit();
+    const loop = try Loop.init(testing.allocator, .{});
+    defer loop.destroy();
 
-    var prepare_watcher = prepare.Watcher.init(&loop, TestState.prepareCallback);
+    var prepare_watcher = prepare.Watcher.init(loop, TestState.prepareCallback);
     try prepare_watcher.start();
     defer prepare_watcher.stop();
 
-    var check_watcher = check.Watcher.init(&loop, TestState.checkCallback);
+    var check_watcher = check.Watcher.init(loop, TestState.checkCallback);
     try check_watcher.start();
     defer check_watcher.stop();
 
     // Add a short timer so the loop has something to wait for and will stop
-    var timer_watcher = timer.Watcher.init(&loop, time.milliseconds(1), 0, TestState.timerCallback);
+    var timer_watcher = timer.Watcher.init(loop, time.milliseconds(1), 0, TestState.timerCallback);
     try timer_watcher.start();
 
     try loop.run(.until_done);

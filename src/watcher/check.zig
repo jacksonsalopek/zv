@@ -13,6 +13,7 @@ pub const Watcher = struct {
     callback: Callback,
     active: bool,
 
+    /// Create an inactive watcher; the callback runs after the loop wakes.
     pub fn init(loop: *Loop, callback: Callback) Watcher {
         return .{
             .loop = loop,
@@ -21,6 +22,7 @@ pub const Watcher = struct {
         };
     }
 
+    /// Register to run after the loop wakes from blocking.
     pub fn start(self: *Watcher) !void {
         if (self.active) return;
 
@@ -28,6 +30,7 @@ pub const Watcher = struct {
         self.active = true;
     }
 
+    /// Stop receiving check callbacks. No-op if inactive.
     pub fn stop(self: *Watcher) void {
         if (!self.active) return;
 
@@ -35,6 +38,7 @@ pub const Watcher = struct {
         self.active = false;
     }
 
+    /// Called by the loop to dispatch `callback`.
     pub fn invoke(self: *Watcher) void {
         self.callback(self);
     }
@@ -43,8 +47,8 @@ pub const Watcher = struct {
 test "check watcher init" {
     const testing = std.testing;
 
-    var loop = try Loop.init(testing.allocator, .{});
-    defer loop.deinit();
+    const loop = try Loop.init(testing.allocator, .{});
+    defer loop.destroy();
 
     const DummyCallback = struct {
         fn callback(watcher: *Watcher) void {
@@ -52,6 +56,6 @@ test "check watcher init" {
         }
     };
 
-    const watcher = Watcher.init(&loop, DummyCallback.callback);
+    const watcher = Watcher.init(loop, DummyCallback.callback);
     try testing.expect(!watcher.active);
 }

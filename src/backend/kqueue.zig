@@ -1,6 +1,8 @@
 //! Kqueue backend for BSD and macOS
 //!
-//! High-performance event notification for BSD-based systems.
+//! `add`/`modify`/`remove` queue interest in userspace. `wait` emits a
+//! changelist in the same `kevent` as the harvest (libev-style). `reify`
+//! is a no-op so init can share the Loop path with epoll.
 
 const std = @import("std");
 const Backend = @import("../backend.zig");
@@ -8,10 +10,20 @@ const builtin = @import("builtin");
 
 const Kqueue = @This();
 
+const Slot = struct {
+    dirty: bool = false,
+    wanted: Backend.Interest = .{},
+    kernel: Backend.Interest = .{},
+    user_data: ?*anyopaque = null,
+};
+
 allocator: std.mem.Allocator,
 kq: std.posix.fd_t,
+slots: std.AutoHashMap(std.posix.fd_t, Slot),
+dirty: std.ArrayList(std.posix.fd_t),
+changes: std.ArrayList(std.posix.system.Kevent),
 
-pub fn init(allocator: std.mem.Allocator) !Backend {
+pub fn init(allocator: std.mem.Allocator, capacity: usize) !Backend {
     const kq = try std.posix.kqueue();
     errdefer std.posix.close(kq);
 
@@ -21,7 +33,18 @@ pub fn init(allocator: std.mem.Allocator) !Backend {
     self.* = .{
         .allocator = allocator,
         .kq = kq,
+        .slots = std.AutoHashMap(std.posix.fd_t, Slot).init(allocator),
+        .dirty = std.ArrayList(std.posix.fd_t){},
+        .changes = std.ArrayList(std.posix.system.Kevent){},
     };
+    errdefer {
+        self.changes.deinit(allocator);
+        self.dirty.deinit(allocator);
+        self.slots.deinit();
+    }
+    try self.slots.ensureTotalCapacity(@intCast(capacity));
+    try self.dirty.ensureTotalCapacity(allocator, capacity);
+    try self.changes.ensureTotalCapacity(allocator, capacity * 2);
 
     return Backend{
         .ptr = self,
@@ -34,83 +57,78 @@ const vtable = Backend.VTable{
     .add = addImpl,
     .modify = modifyImpl,
     .remove = removeImpl,
+    .reify = reifyImpl,
     .wait = waitImpl,
 };
 
 fn deinitImpl(ptr: *anyopaque) void {
     const self: *Kqueue = @ptrCast(@alignCast(ptr));
+    self.changes.deinit(self.allocator);
+    self.dirty.deinit(self.allocator);
+    self.slots.deinit();
     std.posix.close(self.kq);
     self.allocator.destroy(self);
 }
 
-fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) !void {
+fn reifyImpl(_: *anyopaque) Backend.Error!void {}
+
+fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) Backend.Error!void {
     const self: *Kqueue = @ptrCast(@alignCast(ptr));
-
-    const udata_value: usize = if (user_data) |data| @intFromPtr(data) else 0;
-
-    var changes: [2]std.posix.system.Kevent = undefined;
-    var n_changes: usize = 0;
-
-    if (interest.read) {
-        changes[n_changes] = .{
-            .ident = @intCast(fd),
-            .filter = std.posix.system.EVFILT_READ,
-            .flags = std.posix.system.EV_ADD | std.posix.system.EV_ENABLE,
-            .fflags = 0,
-            .data = 0,
-            .udata = udata_value,
+    const gop = try self.slots.getOrPut(fd);
+    if (!gop.found_existing) {
+        gop.value_ptr.* = .{
+            .wanted = interest,
+            .user_data = user_data,
         };
-        n_changes += 1;
+        errdefer _ = self.slots.remove(fd);
+        try self.enqueue(fd, gop.value_ptr);
+        return;
     }
-
-    if (interest.write) {
-        changes[n_changes] = .{
-            .ident = @intCast(fd),
-            .filter = std.posix.system.EVFILT_WRITE,
-            .flags = std.posix.system.EV_ADD | std.posix.system.EV_ENABLE,
-            .fflags = 0,
-            .data = 0,
-            .udata = udata_value,
-        };
-        n_changes += 1;
-    }
-
-    if (n_changes > 0) {
-        _ = try std.posix.kevent(self.kq, changes[0..n_changes], &.{}, null);
-    }
+    try addExisting(self, fd, gop.value_ptr, interest, user_data);
 }
 
-fn modifyImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !void {
-    return addImpl(ptr, fd, interest);
+fn addExisting(
+    self: *Kqueue,
+    fd: std.posix.fd_t,
+    slot: *Slot,
+    interest: Backend.Interest,
+    user_data: ?*anyopaque,
+) !void {
+    if (isWatched(slot.wanted)) return error.AlreadyExists;
+    slot.wanted = interest;
+    slot.user_data = user_data;
+    try self.enqueue(fd, slot);
 }
 
-fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) !void {
+fn modifyImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) Backend.Error!void {
     const self: *Kqueue = @ptrCast(@alignCast(ptr));
-
-    const changes = [_]std.posix.system.Kevent{
-        .{
-            .ident = @intCast(fd),
-            .filter = std.posix.system.EVFILT_READ,
-            .flags = std.posix.system.EV_DELETE,
-            .fflags = 0,
-            .data = 0,
-            .udata = 0,
-        },
-        .{
-            .ident = @intCast(fd),
-            .filter = std.posix.system.EVFILT_WRITE,
-            .flags = std.posix.system.EV_DELETE,
-            .fflags = 0,
-            .data = 0,
-            .udata = 0,
-        },
-    };
-
-    _ = std.posix.kevent(self.kq, &changes, &.{}, null) catch {};
+    const slot = self.slots.getPtr(fd) orelse return error.NotFound;
+    if (!isWatched(slot.wanted)) return error.NotFound;
+    slot.wanted = interest;
+    slot.user_data = user_data;
+    try self.enqueue(fd, slot);
 }
 
-fn waitImpl(ptr: *anyopaque, events: []Backend.Event, timeout_ns: ?u64) !usize {
+fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) Backend.Error!void {
     const self: *Kqueue = @ptrCast(@alignCast(ptr));
+    const slot = self.slots.getPtr(fd) orelse return error.NotFound;
+    slot.wanted = .{};
+    try self.enqueue(fd, slot);
+}
+
+fn enqueue(self: *Kqueue, fd: std.posix.fd_t, slot: *Slot) !void {
+    if (slot.dirty) return;
+    try self.dirty.append(self.allocator, fd);
+    slot.dirty = true;
+}
+
+fn isWatched(interest: Backend.Interest) bool {
+    return interest.read or interest.write;
+}
+
+fn waitImpl(ptr: *anyopaque, events: []Backend.Event, timeout_ns: ?u64) Backend.Error!usize {
+    const self: *Kqueue = @ptrCast(@alignCast(ptr));
+    try self.buildChanges();
 
     const timeout: ?std.posix.timespec = if (timeout_ns) |ns| .{
         .tv_sec = @intCast(ns / std.time.ns_per_s),
@@ -122,29 +140,90 @@ fn waitImpl(ptr: *anyopaque, events: []Backend.Event, timeout_ns: ?u64) !usize {
 
     const n = try std.posix.kevent(
         self.kq,
-        &.{},
+        self.changes.items,
         kevents[0..max_events],
         if (timeout) |*t| t else null,
     );
 
-    var event_idx: usize = 0;
-    for (kevents[0..n]) |kevent| {
-        if (event_idx >= events.len) break;
+    self.commitDirty();
+    return harvest(kevents[0..n], events);
+}
 
-        const fd: std.posix.fd_t = @intCast(kevent.ident);
-        const mask = keventToMask(kevent);
-
-        if (!mask.isEmpty()) {
-            events[event_idx] = .{
-                .fd = fd,
-                .events = mask,
-                .user_data = if (kevent.udata != 0) @ptrFromInt(kevent.udata) else null,
-            };
-            event_idx += 1;
-        }
+fn buildChanges(self: *Kqueue) !void {
+    self.changes.clearRetainingCapacity();
+    for (self.dirty.items) |fd| {
+        try self.appendFdChanges(fd);
     }
+}
 
+fn appendFdChanges(self: *Kqueue, fd: std.posix.fd_t) !void {
+    const slot = self.slots.getPtr(fd) orelse return;
+    if (!slot.dirty) return;
+    if (!isWatched(slot.wanted) and !isWatched(slot.kernel)) return;
+    try self.appendFilter(fd, slot, true);
+    try self.appendFilter(fd, slot, false);
+}
+
+fn appendFilter(self: *Kqueue, fd: std.posix.fd_t, slot: *Slot, read: bool) !void {
+    const wanted = if (read) slot.wanted.read else slot.wanted.write;
+    const kernel = if (read) slot.kernel.read else slot.kernel.write;
+    if (!wanted and !kernel) return;
+    if (wanted and kernel) {
+        try self.appendChange(fd, read, true, slot.user_data);
+        return;
+    }
+    try self.appendChange(fd, read, wanted, slot.user_data);
+}
+
+fn appendChange(self: *Kqueue, fd: std.posix.fd_t, read: bool, add: bool, user_data: ?*anyopaque) !void {
+    const filter = if (read) std.posix.system.EVFILT_READ else std.posix.system.EVFILT_WRITE;
+    const flags: u16 = if (add)
+        std.posix.system.EV_ADD | std.posix.system.EV_ENABLE
+    else
+        std.posix.system.EV_DELETE;
+    try self.changes.append(self.allocator, .{
+        .ident = @intCast(fd),
+        .filter = filter,
+        .flags = flags,
+        .fflags = 0,
+        .data = 0,
+        .udata = if (user_data) |data| @intFromPtr(data) else 0,
+    });
+}
+
+fn commitDirty(self: *Kqueue) void {
+    for (self.dirty.items) |fd| {
+        commitSlot(&self.slots, fd);
+    }
+    self.dirty.clearRetainingCapacity();
+}
+
+fn commitSlot(slots: *std.AutoHashMap(std.posix.fd_t, Slot), fd: std.posix.fd_t) void {
+    const slot = slots.getPtr(fd) orelse return;
+    slot.dirty = false;
+    slot.kernel = slot.wanted;
+    if (isWatched(slot.wanted)) return;
+    _ = slots.remove(fd);
+}
+
+fn harvest(kevents: []const std.posix.system.Kevent, events: []Backend.Event) usize {
+    var event_idx: usize = 0;
+    for (kevents) |kevent| {
+        if (event_idx >= events.len) break;
+        event_idx = harvestOne(kevent, events, event_idx);
+    }
     return event_idx;
+}
+
+fn harvestOne(kevent: std.posix.system.Kevent, events: []Backend.Event, event_idx: usize) usize {
+    const mask = keventToMask(kevent);
+    if (mask.isEmpty()) return event_idx;
+    events[event_idx] = .{
+        .fd = @intCast(kevent.ident),
+        .events = mask,
+        .user_data = if (kevent.udata != 0) @ptrFromInt(kevent.udata) else null,
+    };
+    return event_idx + 1;
 }
 
 fn keventToMask(kevent: std.posix.system.Kevent) Backend.EventMask {
@@ -163,7 +242,7 @@ test "kqueue init" {
     if (!isKqueueSupported()) return error.SkipZigTest;
 
     const testing = std.testing;
-    const backend = try init(testing.allocator);
+    const backend = try init(testing.allocator, 8);
     defer backend.deinit();
 }
 

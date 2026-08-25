@@ -12,7 +12,7 @@ fds: std.ArrayList(std.posix.pollfd),
 fd_map: std.AutoHashMap(std.posix.fd_t, usize),
 user_data_map: std.AutoHashMap(std.posix.fd_t, ?*anyopaque),
 
-pub fn init(allocator: std.mem.Allocator) !Backend {
+pub fn init(allocator: std.mem.Allocator, capacity: usize) !Backend {
     const self = try allocator.create(Poll);
     errdefer allocator.destroy(self);
 
@@ -22,6 +22,14 @@ pub fn init(allocator: std.mem.Allocator) !Backend {
         .fd_map = std.AutoHashMap(std.posix.fd_t, usize).init(allocator),
         .user_data_map = std.AutoHashMap(std.posix.fd_t, ?*anyopaque).init(allocator),
     };
+    errdefer {
+        self.fds.deinit(allocator);
+        self.fd_map.deinit();
+        self.user_data_map.deinit();
+    }
+    try self.fds.ensureTotalCapacity(allocator, capacity);
+    try self.fd_map.ensureTotalCapacity(@intCast(capacity));
+    try self.user_data_map.ensureTotalCapacity(@intCast(capacity));
 
     return Backend{
         .ptr = self,
@@ -34,8 +42,11 @@ const vtable = Backend.VTable{
     .add = addImpl,
     .modify = modifyImpl,
     .remove = removeImpl,
+    .reify = reifyImpl,
     .wait = waitImpl,
 };
+
+fn reifyImpl(_: *anyopaque) Backend.Error!void {}
 
 fn deinitImpl(ptr: *anyopaque) void {
     const self: *Poll = @ptrCast(@alignCast(ptr));
@@ -45,7 +56,7 @@ fn deinitImpl(ptr: *anyopaque) void {
     self.allocator.destroy(self);
 }
 
-fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) !void {
+fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) Backend.Error!void {
     const self: *Poll = @ptrCast(@alignCast(ptr));
 
     if (self.fd_map.contains(fd)) return error.AlreadyExists;
@@ -58,21 +69,25 @@ fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user
         .events = events,
         .revents = 0,
     });
+    errdefer _ = self.fds.pop();
 
     try self.fd_map.put(fd, idx);
+    errdefer _ = self.fd_map.remove(fd);
+
     try self.user_data_map.put(fd, user_data);
 }
 
-fn modifyImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest) !void {
+fn modifyImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) Backend.Error!void {
     const self: *Poll = @ptrCast(@alignCast(ptr));
 
     const idx = self.fd_map.get(fd) orelse return error.NotFound;
     const events = interestToPollEvents(interest);
 
     self.fds.items[idx].events = events;
+    try self.user_data_map.put(fd, user_data);
 }
 
-fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) !void {
+fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) Backend.Error!void {
     const self: *Poll = @ptrCast(@alignCast(ptr));
 
     const idx = self.fd_map.get(fd) orelse return error.NotFound;
@@ -87,15 +102,12 @@ fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) !void {
     }
 }
 
-fn waitImpl(ptr: *anyopaque, events: []Backend.Event, timeout_ns: ?u64) !usize {
+fn waitImpl(ptr: *anyopaque, events: []Backend.Event, timeout_ns: ?u64) Backend.Error!usize {
     const self: *Poll = @ptrCast(@alignCast(ptr));
 
     if (self.fds.items.len == 0) return 0;
 
-    const timeout_ms: i32 = if (timeout_ns) |ns| blk: {
-        const ms: i64 = @intCast(ns / std.time.ns_per_ms);
-        break :blk @intCast(@min(ms, std.math.maxInt(i32)));
-    } else -1;
+    const timeout_ms = Backend.timeoutMillis(timeout_ns);
 
     _ = try std.posix.poll(self.fds.items, timeout_ms);
 
@@ -136,6 +148,6 @@ fn pollEventsToMask(revents: i16) Backend.EventMask {
 
 test "poll init" {
     const testing = std.testing;
-    const backend = try init(testing.allocator);
+    const backend = try init(testing.allocator, 8);
     defer backend.deinit();
 }

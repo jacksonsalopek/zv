@@ -1,10 +1,6 @@
 //! Basic usage example for zv event loop
 //!
-//! This example demonstrates:
-//! - Creating an event loop
-//! - Setting up an IO watcher
-//! - Setting up a timer
-//! - Running the loop
+//! Demonstrates creating a loop, a repeating timer, and run(.once).
 
 const std = @import("std");
 const zv = @import("zv");
@@ -17,11 +13,11 @@ pub fn main() !void {
     std.debug.print("zv Event Loop Example\n", .{});
     std.debug.print("Backend: {s}\n\n", .{@tagName(zv.Backend.selectBest())});
 
-    var loop = try zv.Loop.init(allocator, .{});
-    defer loop.deinit();
+    const loop = try zv.Loop.init(allocator, .{});
+    defer loop.destroy();
 
     var timer = zv.timer.Watcher.init(
-        &loop,
+        loop,
         zv.time.seconds(1),
         zv.time.seconds(1),
         timerCallback,
@@ -43,6 +39,6 @@ pub fn main() !void {
 
 fn timerCallback(watcher: *zv.timer.Watcher) void {
     _ = watcher;
-    const time = std.time.timestamp();
-    std.debug.print("[{}] Timer fired!\n", .{time});
+    const timestamp = std.time.timestamp();
+    std.debug.print("[{}] Timer fired!\n", .{timestamp});
 }

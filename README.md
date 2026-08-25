@@ -1,67 +1,53 @@
-# zv - High-Performance Event Loop for Zig
+# zv - Event Loop for Zig
 
-A Zig port of libev with better memory safety and a smaller footprint. zv provides a high-performance, cross-platform event loop library for building asynchronous I/O applications.
+A Zig port of a **subset** of [libev](http://software.schmorp.de/pkg/libev.html) with Zig allocators and error unions. zv is a library (not an executable) for asynchronous I/O on POSIX systems.
+
+Requires **Zig 0.15.2** or later.
 
 ## Documentation
 
-- **[API Documentation](./docs/README.md)** - Complete API reference and guides
-- **[Benchmarks](./docs/benchmarks/README.md)** - Performance comparison with libev
-- **[Security](./docs/SECURITY.md)** - Security considerations and limitations
-- **[Examples](./examples/)** - Usage examples (see below for running)
+- **[API Documentation](./docs/README.md)** — types, watchers, backends, run modes
+- **[Benchmarks](./docs/benchmarks/README.md)** — how to run the libev comparison suite
+- **[Security](./docs/SECURITY.md)** — security model and thread-safety contract
+- **[Examples](./examples/)** — source samples (`basic_example.zig`, `prepare_check_example.zig`)
 
-## Examples
-
-View example code in the `examples/` directory:
-- `basic_example.zig` - IO and timer watchers
-- `prepare_check_example.zig` - Prepare and check watchers
+Examples are not wired into `zig build`; copy from `examples/` or import the `zv` module in your own executable.
 
 ## Features
 
-- **Multiple Backends**: Automatically selects the best backend for your platform
+- **Backends** (automatic via `Backend.selectBest()`, or set `Loop.Options.backend`):
   - `epoll` on Linux
   - `kqueue` on BSD/macOS
-  - `poll` as POSIX fallback
-  - `select` as universal fallback
+  - `poll` as the default POSIX fallback
+  - `select` exists as a kind but `wait` always returns 0 events — do not use it
 
-- **Watcher Types**:
-  - IO watchers for file descriptor monitoring
-  - Timer watchers for time-based events
-  - Signal watchers for Unix signal handling
-  - Prepare watchers for pre-poll callbacks
-  - Check watchers for post-poll callbacks
+- **Watcher types**: IO, timer, signal, prepare, check
 
-- **Memory Safe**: Uses Zig's allocator system and error handling
-- **Zero Dependencies**: Only uses Zig's standard library
-- **Library-Only**: Designed as a reusable library, not an executable
-- **Optimized Data Structures**: 
-  - Intrusive min-heap for timers (O(log n) for all operations)
-  - Direct pointer storage in backends (zero lookup overhead)
+- **Zig-only core**: no libc/libev dependency in the library itself (libev is used only by `zig build benchmark`)
+
+- **Timer heap**: intrusive min-heap (`O(log n)` insert/remove/update)
 
 ## Installation
 
-Add zv to your `build.zig.zon`:
+Requires Zig 0.15.2+. From your project:
 
-```zig
-.dependencies = .{
-    .zv = .{
-        .url = "https://github.com/yourusername/zv/archive/main.tar.gz",
-        .hash = "...",
-    },
-},
+```bash
+zig fetch --save git+https://github.com/jacksonsalopek/zv
 ```
 
-Then in your `build.zig`:
+Then in `build.zig`:
 
 ```zig
 const zv = b.dependency("zv", .{
     .target = target,
     .optimize = optimize,
 });
-
 exe.root_module.addImport("zv", zv.module("zv"));
 ```
 
 ## Quick Start
+
+`Loop.init` heap-allocates; pair it with `destroy()` (not `deinit()` alone). Watcher `init` takes `*Loop`, not `*Loop` taken by address:
 
 ```zig
 const std = @import("std");
@@ -72,33 +58,27 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Create event loop
-    var loop = try zv.Loop.init(allocator, .{});
-    defer loop.deinit();
+    const loop = try zv.Loop.init(allocator, .{});
+    defer loop.destroy();
 
-    // IO watcher example
-    const stdin_fd = std.io.getStdIn().handle;
-    
     var io_watcher = zv.io.Watcher.init(
-        &loop,
-        stdin_fd,
+        loop,
+        std.posix.STDIN_FILENO,
         .read,
         handleIoEvent,
     );
     try io_watcher.start();
     defer io_watcher.stop() catch {};
 
-    // Timer example
     var timer = zv.timer.Watcher.init(
-        &loop,
+        loop,
         zv.time.seconds(5),
-        zv.time.seconds(1),  // repeat every 1 second
+        zv.time.seconds(1),
         handleTimerEvent,
     );
     try timer.start();
     defer timer.stop();
 
-    // Run the event loop
     try loop.run(.until_done);
 }
 
@@ -114,228 +94,131 @@ fn handleTimerEvent(watcher: *zv.timer.Watcher) void {
 }
 ```
 
-## API Documentation
-
-### Loop
-
-The main event loop structure.
+## Loop
 
 ```zig
-// Initialize a loop
-var loop = try zv.Loop.init(allocator, .{});
-defer loop.deinit();
+const loop = try zv.Loop.init(allocator, .{
+    .backend = null, // null = Backend.selectBest()
+    .max_events = 64,
+    .initial_watcher_capacity = 32,
+});
+defer loop.destroy();
 
-// Run modes
-try loop.run(.until_done);  // Run until no active watchers
-try loop.run(.once);         // Run one iteration, blocking
-try loop.run(.nowait);       // Run one iteration, non-blocking
+try loop.run(.until_done); // until no IO/timer watchers remain
+try loop.run(.once);        // one iteration, may block
+try loop.run(.nowait);      // one iteration, non-blocking
 
-// Time management
-const current_time = loop.now();  // Cached time
-loop.updateTime();                 // Update cached time
+_ = loop.now();             // cached monotonic time (ns)
+loop.updateTime();          // refresh cache
+try loop.wakeup();          // interrupt a blocked wait (any thread)
+loop.requestBreak(.one);    // leave run after this iteration (libev ev_break)
 ```
 
-### IO Watchers
+`run` returns `error.AlreadyRunning` if another call is in progress (nested `run` is not supported). `deinit` releases backends and the internal waker but does **not** free the `Loop` allocation; use `destroy` after `init`. Prepare and check watchers do not keep `until_done` running.
 
-Monitor file descriptors for read/write availability.
+On epoll and kqueue, IO `start`/`stop`/`modify` update userspace interest only. Kernel registration happens in `run` before `wait` (libev `fd_reify`). A closed or epoll-incompatible fd succeeds at `start`; `run` returns the backend error. Two IO watchers on the same fd still fail at `start` (`error.AlreadyExists`). Poll and select apply interest immediately. The internal waker fd is registered at `Loop.init`.
 
-```zig
-var watcher = zv.io.Watcher.init(&loop, fd, .read, callback);
-try watcher.start();
-try watcher.modify(.both);  // Change to monitor both read and write
-try watcher.stop();
-```
-
-### Timer Watchers
-
-Schedule callbacks after a timeout.
+## Watchers
 
 ```zig
-// One-shot timer (5 seconds)
-var timer = zv.timer.Watcher.init(&loop, zv.time.seconds(5), 0, callback);
-try timer.start();
+// IO — callback: fn (*io.Watcher, Backend.EventMask) void
+var io = zv.io.Watcher.init(loop, fd, .read, ioCallback); // .read, .write, .both
+try io.start();
+try io.modify(.both);
+try io.stop();
 
-// Repeating timer (initial 5s, then every 1s)
-var repeating = zv.timer.Watcher.init(
-    &loop,
-    zv.time.seconds(5),
-    zv.time.seconds(1),
-    callback,
-);
-try repeating.start();
+// Timer — times in nanoseconds; repeat_ns = 0 is one-shot
+var t = zv.timer.Watcher.init(loop, zv.time.seconds(5), 0, timerCallback);
+try t.start();
+_ = t.remaining();
+try t.again(); // libev ev_timer_again: restart from repeat_ns, or stop if 0
+t.stop();
 
-// Check remaining time
-const remaining_ns = timer.remaining();
+// Signal — Unix only; one watcher per signal process-wide
+var sig = zv.signal.Watcher.init(loop, std.posix.SIG.INT, signalCallback);
+try sig.start();
+defer sig.deinit(); // same as stop(); restores previous handler
 
-// Restart a repeating timer
-try timer.again();
-```
+fn signalCallback(watcher: *zv.signal.Watcher, signum: c_int) void {
+    _ = watcher;
+    _ = signum;
+}
 
-### Signal Watchers
-
-Handle Unix signals (not supported on Windows).
-
-```zig
-const SIGINT = std.posix.SIG.INT;
-var signal_watcher = zv.signal.Watcher.init(&loop, SIGINT, callback);
-try signal_watcher.start();
-defer signal_watcher.deinit();
-```
-
-### Prepare Watchers
-
-Execute callbacks before the loop polls for events.
-
-```zig
-var prepare = zv.prepare.Watcher.init(&loop, callback);
+// Prepare / check — run before / after backend.wait()
+var prepare = zv.prepare.Watcher.init(loop, prepareCallback);
 try prepare.start();
 defer prepare.stop();
 
-// Callback runs before each backend.wait() call
-fn callback(watcher: *zv.prepare.Watcher) void {
-    std.debug.print("About to poll...\n", .{});
-}
-```
-
-**Use cases:**
-- Integrating other event loops
-- Setup work before blocking
-- Performance instrumentation
-
-### Check Watchers
-
-Execute callbacks after the loop polls for events.
-
-```zig
-var check = zv.check.Watcher.init(&loop, callback);
+var check = zv.check.Watcher.init(loop, checkCallback);
 try check.start();
 defer check.stop();
-
-// Callback runs after each backend.wait() call
-fn callback(watcher: *zv.check.Watcher) void {
-    std.debug.print("Just finished polling...\n", .{});
-}
 ```
 
-**Use cases:**
-- Integrating other event loops
-- Cleanup work after blocking
-- Latency measurements
-
-## Time Utilities
+## Time
 
 ```zig
 const five_sec = zv.time.seconds(5);
 const hundred_ms = zv.time.milliseconds(100);
 const five_hundred_us = zv.time.microseconds(500);
-
 const now = zv.time.now();
 const elapsed = zv.time.diff(later, earlier);
 ```
 
-## Backend Selection
+## Thread safety
 
-zv automatically selects the best backend for your platform:
+`run()` is single-threaded (one caller at a time). `wakeup()`, `requestBreak()`, and `now()`/`updateTime()` are safe from other threads. Watcher `start`/`stop`/`modify` must run on the loop thread. Prefer one loop per thread. Details: [SECURITY.md](./docs/SECURITY.md).
 
-```zig
-// Automatic selection
-var loop = try zv.Loop.init(allocator, .{});
-
-// Manual selection
-var loop = try zv.Loop.init(allocator, .{ .backend = .epoll });
-
-// Check what was selected
-const backend = zv.Backend.selectBest();
-```
-
-## Testing
-
-Run the test suite:
+## Testing and docs
 
 ```bash
 zig build test
-```
-
-Generate documentation:
-
-```bash
 zig build docs
 ```
 
-## Benchmarking
+## Benchmarks
 
-Compare zv's performance against libev. Requires libev installed on your system.
+libev is required **only** for benchmarks. The library itself has no libev dependency.
 
-**Note:** libev is ONLY required for benchmarks. The main zv library has zero dependencies.
-
-**Run benchmarks:**
 ```bash
-# Run all benchmarks
 zig build benchmark
-
-# Run specific benchmark
 zig build benchmark -- --name loop-throughput
-zig build benchmark -- --name io-operations
-zig build benchmark -- --name timer-accuracy
-zig build benchmark -- --name memory-usage
-zig build benchmark -- --name scaling
-
-# Get help
 zig build benchmark -- --help
 ```
 
-If libev is not installed, the build system will provide installation instructions for your platform.
+Do not treat older README numbers as current; run the suite on your machine. See [benchmark documentation](./docs/benchmarks/README.md).
 
-**Results:**
-zv demonstrates **30-45% better performance** than libev across various scenarios:
-- Empty loop: 1.31-1.46x faster (500k iterations)
-- 1000 idle watchers: 1.43x faster (50k iterations)
-- 100 active timers: 1.45x faster (10k iterations)
-- Scales to 10,000 IO watchers and 5,000 timers
+## Platform support
 
-See [**Benchmark Documentation**](./docs/benchmarks/README.md) for detailed results and methodology.
-
-## Platform Support
-
-- **Linux**: Full support with epoll backend
-- **macOS/BSD**: Full support with kqueue backend
-- **Other POSIX**: Poll backend fallback
-- **Windows**: Select backend (basic support)
-
-## Performance
-
-zv is designed for high performance:
-- Zero-copy event delivery
-- Efficient backend selection per platform
-- Minimal allocations during event loop runtime
-- Cached time to avoid excessive syscalls
-
-## License
-
-MIT License - see LICENSE file for details
+| Platform | Default backend | Notes |
+|----------|-----------------|--------|
+| Linux | epoll | Full |
+| macOS / BSD | kqueue | Full |
+| Other POSIX | poll | `select` available via `Options.backend` |
+| Windows | — | Not supported (`signal` returns `error.UnsupportedOnWindows`; `selectBest` would pick `poll`) |
 
 ## Comparison with libev
 
-| Feature | libev | zv |
-|---------|-------|-----|
+zv is a Zig-idiomatic subset, not a C ABI or drop-in replacement.
+
+| | libev | zv |
+|--|-------|-----|
 | Language | C | Zig |
-| Memory Safety | Manual | Automatic (Zig allocators) |
-| Error Handling | errno | Zig error unions |
-| Backends | epoll, kqueue, poll, select, more | epoll, kqueue, poll, select |
-| Footprint | ~50KB | ~30KB |
-| Dependencies | libc | Only Zig std |
+| Error handling | errno | error unions |
+| Time | `ev_tstamp` (seconds, `double`) | `u64` nanoseconds |
+| Backends | epoll, kqueue, poll, select, plus others | epoll, kqueue, poll; `select` is a stub (`wait` is unimplemented) |
+| Watchers | io, timer, periodic, signal, child, stat, idle, prepare, check, embed, fork, cleanup, async | io, timer, signal, prepare, check |
+| `ev_run` flags | 0 / `EVRUN_ONCE` / `EVRUN_NOWAIT` | `.until_done` / `.once` / `.nowait` |
+| `ev_break` | `EVBREAK_ONE` / `EVBREAK_ALL` | `requestBreak(.one \| .all)` (no nested `run`, so both are equivalent) |
+| IO events | `EV_READ` / `EV_WRITE` bitset; many watchers per fd | `.read` / `.write` / `.both`; **one watcher per fd** |
+| Timers | oneshot + repeating; `ev_timer_again` | same; `again()` matches libev (`repeat == 0` stops) |
+| Signals | multiple watchers per signal per loop | one watcher per signal, process-wide |
+| Prepare/check | count as active (keep `ev_run` alive) | do **not** keep `until_done` running |
+| Priority / multiplicity default loop | `ev_set_priority`, `ev_default_loop` | not provided (create loops explicitly) |
+| `ev_suspend` / `ev_resume` | yes | not provided |
+| Dependencies | libc | Zig std only |
 
-## Contributing
+Not ported (explicitly out of scope): periodic, child, stat, idle, embed, fork, cleanup, async, and extra libev backends.
 
-Contributions are welcome! Please ensure:
-- All tests pass (`zig build test`)
-- Code follows Zig style guidelines
-- New features include tests and documentation
+## License
 
-## Roadmap
-
-- [x] Add prepare/check watchers
-- [ ] Add async watcher support
-- [ ] Add child process watchers
-- [x] Benchmark suite
-- [x] Comprehensive examples
+MIT License — see [LICENSE](./LICENSE).

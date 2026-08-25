@@ -10,6 +10,7 @@ pub const TimerHeap = struct {
     items: std.ArrayList(*TimerWatcher),
     allocator: std.mem.Allocator,
 
+    /// Create an empty heap.
     pub fn init(allocator: std.mem.Allocator) TimerHeap {
         return .{
             .items = std.ArrayList(*TimerWatcher){},
@@ -17,10 +18,12 @@ pub const TimerHeap = struct {
         };
     }
 
+    /// Free heap storage. Does not stop or destroy timers.
     pub fn deinit(self: *TimerHeap) void {
         self.items.deinit(self.allocator);
     }
 
+    /// Number of timers currently in the heap.
     pub fn count(self: *TimerHeap) usize {
         return self.items.items.len;
     }
@@ -48,15 +51,23 @@ pub const TimerHeap = struct {
         
         if (last_idx == 0) {
             _ = self.items.pop();
+            min.heap_index = std.math.maxInt(usize);
             return min;
         }
-        
+
         self.items.items[0] = self.items.items[last_idx];
         self.items.items[0].heap_index = 0;
         _ = self.items.pop();
         self.siftDown(0);
-        
+
+        min.heap_index = std.math.maxInt(usize);
         return min;
+    }
+
+    /// True if `timer` is currently stored in this heap.
+    pub fn contains(self: *TimerHeap, timer: *TimerWatcher) bool {
+        if (timer.heap_index >= self.items.items.len) return false;
+        return self.items.items[timer.heap_index] == timer;
     }
 
     /// Remove specific timer - O(log n) with intrusive index
@@ -82,6 +93,7 @@ pub const TimerHeap = struct {
         const last_idx = self.items.items.len - 1;
         
         if (idx == last_idx) {
+            self.items.items[idx].heap_index = std.math.maxInt(usize);
             _ = self.items.pop();
             return;
         }
@@ -92,13 +104,6 @@ pub const TimerHeap = struct {
         
         self.siftUp(idx);
         self.siftDown(idx);
-    }
-
-    fn findIndex(self: *TimerHeap, timer: *TimerWatcher) ?usize {
-        for (self.items.items, 0..) |t, i| {
-            if (t == timer) return i;
-        }
-        return null;
     }
 
     fn siftUp(self: *TimerHeap, start_idx: usize) void {
@@ -158,8 +163,8 @@ test "heap insert and peek" {
     const testing = std.testing;
     const Loop = @import("loop.zig");
     
-    var loop = try Loop.init(testing.allocator, .{});
-    defer loop.deinit();
+    const loop = try Loop.init(testing.allocator, .{});
+    defer loop.destroy();
     
     var heap = TimerHeap.init(testing.allocator);
     defer heap.deinit();
@@ -168,11 +173,11 @@ test "heap insert and peek" {
         fn cb(_: *TimerWatcher) void {}
     }.cb;
     
-    var t1 = TimerWatcher.init(&loop, 100, 0, callback);
+    var t1 = TimerWatcher.init(loop, 100, 0, callback);
     t1.deadline = 100;
-    var t2 = TimerWatcher.init(&loop, 50, 0, callback);
+    var t2 = TimerWatcher.init(loop, 50, 0, callback);
     t2.deadline = 50;
-    var t3 = TimerWatcher.init(&loop, 200, 0, callback);
+    var t3 = TimerWatcher.init(loop, 200, 0, callback);
     t3.deadline = 200;
     
     try heap.insert(&t1);
@@ -189,8 +194,8 @@ test "heap remove min" {
     const testing = std.testing;
     const Loop = @import("loop.zig");
     
-    var loop = try Loop.init(testing.allocator, .{});
-    defer loop.deinit();
+    const loop = try Loop.init(testing.allocator, .{});
+    defer loop.destroy();
     
     var heap = TimerHeap.init(testing.allocator);
     defer heap.deinit();
@@ -199,11 +204,11 @@ test "heap remove min" {
         fn cb(_: *TimerWatcher) void {}
     }.cb;
     
-    var t1 = TimerWatcher.init(&loop, 100, 0, callback);
+    var t1 = TimerWatcher.init(loop, 100, 0, callback);
     t1.deadline = 100;
-    var t2 = TimerWatcher.init(&loop, 50, 0, callback);
+    var t2 = TimerWatcher.init(loop, 50, 0, callback);
     t2.deadline = 50;
-    var t3 = TimerWatcher.init(&loop, 200, 0, callback);
+    var t3 = TimerWatcher.init(loop, 200, 0, callback);
     t3.deadline = 200;
     
     try heap.insert(&t1);
@@ -226,8 +231,8 @@ test "heap remove specific" {
     const testing = std.testing;
     const Loop = @import("loop.zig");
     
-    var loop = try Loop.init(testing.allocator, .{});
-    defer loop.deinit();
+    const loop = try Loop.init(testing.allocator, .{});
+    defer loop.destroy();
     
     var heap = TimerHeap.init(testing.allocator);
     defer heap.deinit();
@@ -236,11 +241,11 @@ test "heap remove specific" {
         fn cb(_: *TimerWatcher) void {}
     }.cb;
     
-    var t1 = TimerWatcher.init(&loop, 100, 0, callback);
+    var t1 = TimerWatcher.init(loop, 100, 0, callback);
     t1.deadline = 100;
-    var t2 = TimerWatcher.init(&loop, 50, 0, callback);
+    var t2 = TimerWatcher.init(loop, 50, 0, callback);
     t2.deadline = 50;
-    var t3 = TimerWatcher.init(&loop, 200, 0, callback);
+    var t3 = TimerWatcher.init(loop, 200, 0, callback);
     t3.deadline = 200;
     
     try heap.insert(&t1);
@@ -252,4 +257,51 @@ test "heap remove specific" {
     
     const min = heap.peek().?;
     try testing.expectEqual(50, min.deadline);
+}
+
+test "heap contains after removeMin" {
+    const testing = std.testing;
+    const Loop = @import("loop.zig");
+
+    const loop = try Loop.init(testing.allocator, .{});
+    defer loop.destroy();
+
+    var heap = TimerHeap.init(testing.allocator);
+    defer heap.deinit();
+
+    const callback = struct {
+        fn cb(_: *TimerWatcher) void {}
+    }.cb;
+
+    var t1 = TimerWatcher.init(loop, 50, 0, callback);
+    t1.deadline = 50;
+    var t2 = TimerWatcher.init(loop, 100, 0, callback);
+    t2.deadline = 100;
+
+    try heap.insert(&t1);
+    try heap.insert(&t2);
+    try testing.expect(heap.contains(&t1));
+
+    const min = heap.removeMin().?;
+    try testing.expectEqual(&t1, min);
+    try testing.expect(!heap.contains(&t1));
+    try testing.expect(heap.contains(&t2));
+}
+
+test "heap contains rejects timer not in heap" {
+    const testing = std.testing;
+    const Loop = @import("loop.zig");
+
+    const loop = try Loop.init(testing.allocator, .{});
+    defer loop.destroy();
+
+    var heap = TimerHeap.init(testing.allocator);
+    defer heap.deinit();
+
+    const callback = struct {
+        fn cb(_: *TimerWatcher) void {}
+    }.cb;
+
+    var t = TimerWatcher.init(loop, 100, 0, callback);
+    try testing.expect(!heap.contains(&t));
 }
