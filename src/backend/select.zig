@@ -18,9 +18,9 @@ const FdSet = extern struct {
 const FD_SETSIZE: usize = 1024;
 
 allocator: std.mem.Allocator,
-read_fds: std.AutoHashMap(std.posix.fd_t, void),
-write_fds: std.AutoHashMap(std.posix.fd_t, void),
-user_data_map: std.AutoHashMap(std.posix.fd_t, ?*anyopaque),
+read_fds: std.AutoHashMapUnmanaged(std.posix.fd_t, void),
+write_fds: std.AutoHashMapUnmanaged(std.posix.fd_t, void),
+user_data_map: std.AutoHashMapUnmanaged(std.posix.fd_t, ?*anyopaque),
 max_fd: std.posix.fd_t,
 
 pub fn init(allocator: std.mem.Allocator) !Backend {
@@ -29,9 +29,9 @@ pub fn init(allocator: std.mem.Allocator) !Backend {
 
     self.* = .{
         .allocator = allocator,
-        .read_fds = std.AutoHashMap(std.posix.fd_t, void).init(allocator),
-        .write_fds = std.AutoHashMap(std.posix.fd_t, void).init(allocator),
-        .user_data_map = std.AutoHashMap(std.posix.fd_t, ?*anyopaque).init(allocator),
+        .read_fds = .empty,
+        .write_fds = .empty,
+        .user_data_map = .empty,
         .max_fd = 0,
     };
 
@@ -54,9 +54,9 @@ fn reifyImpl(_: *anyopaque) Backend.Error!void {}
 
 fn deinitImpl(ptr: *anyopaque) void {
     const self: *Select = @ptrCast(@alignCast(ptr));
-    self.read_fds.deinit();
-    self.write_fds.deinit();
-    self.user_data_map.deinit();
+    self.read_fds.deinit(self.allocator);
+    self.write_fds.deinit(self.allocator);
+    self.user_data_map.deinit(self.allocator);
     self.allocator.destroy(self);
 }
 
@@ -66,13 +66,13 @@ fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user
     if (fd >= FD_SETSIZE) return error.FdTooLarge;
 
     if (interest.read) {
-        try self.read_fds.put(fd, {});
+        try self.read_fds.put(self.allocator, fd, {});
     }
     if (interest.write) {
-        try self.write_fds.put(fd, {});
+        try self.write_fds.put(self.allocator, fd, {});
     }
 
-    try self.user_data_map.put(fd, user_data);
+    try self.user_data_map.put(self.allocator, fd, user_data);
     self.updateMaxFd();
 }
 

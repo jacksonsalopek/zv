@@ -9,8 +9,8 @@ const Poll = @This();
 
 allocator: std.mem.Allocator,
 fds: std.ArrayList(std.posix.pollfd),
-fd_map: std.AutoHashMap(std.posix.fd_t, usize),
-user_data_map: std.AutoHashMap(std.posix.fd_t, ?*anyopaque),
+fd_map: std.AutoHashMapUnmanaged(std.posix.fd_t, usize),
+user_data_map: std.AutoHashMapUnmanaged(std.posix.fd_t, ?*anyopaque),
 
 pub fn init(allocator: std.mem.Allocator, capacity: usize) !Backend {
     const self = try allocator.create(Poll);
@@ -18,18 +18,18 @@ pub fn init(allocator: std.mem.Allocator, capacity: usize) !Backend {
 
     self.* = .{
         .allocator = allocator,
-        .fds = std.ArrayList(std.posix.pollfd){},
-        .fd_map = std.AutoHashMap(std.posix.fd_t, usize).init(allocator),
-        .user_data_map = std.AutoHashMap(std.posix.fd_t, ?*anyopaque).init(allocator),
+        .fds = .empty,
+        .fd_map = .empty,
+        .user_data_map = .empty,
     };
     errdefer {
         self.fds.deinit(allocator);
-        self.fd_map.deinit();
-        self.user_data_map.deinit();
+        self.fd_map.deinit(allocator);
+        self.user_data_map.deinit(allocator);
     }
     try self.fds.ensureTotalCapacity(allocator, capacity);
-    try self.fd_map.ensureTotalCapacity(@intCast(capacity));
-    try self.user_data_map.ensureTotalCapacity(@intCast(capacity));
+    try self.fd_map.ensureTotalCapacity(allocator, @intCast(capacity));
+    try self.user_data_map.ensureTotalCapacity(allocator, @intCast(capacity));
 
     return Backend{
         .ptr = self,
@@ -51,8 +51,8 @@ fn reifyImpl(_: *anyopaque) Backend.Error!void {}
 fn deinitImpl(ptr: *anyopaque) void {
     const self: *Poll = @ptrCast(@alignCast(ptr));
     self.fds.deinit(self.allocator);
-    self.fd_map.deinit();
-    self.user_data_map.deinit();
+    self.fd_map.deinit(self.allocator);
+    self.user_data_map.deinit(self.allocator);
     self.allocator.destroy(self);
 }
 
@@ -71,10 +71,10 @@ fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user
     });
     errdefer _ = self.fds.pop();
 
-    try self.fd_map.put(fd, idx);
+    try self.fd_map.put(self.allocator, fd, idx);
     errdefer _ = self.fd_map.remove(fd);
 
-    try self.user_data_map.put(fd, user_data);
+    try self.user_data_map.put(self.allocator, fd, user_data);
 }
 
 fn modifyImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) Backend.Error!void {
@@ -84,7 +84,7 @@ fn modifyImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, u
     const events = interestToPollEvents(interest);
 
     self.fds.items[idx].events = events;
-    try self.user_data_map.put(fd, user_data);
+    try self.user_data_map.put(self.allocator, fd, user_data);
 }
 
 fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) Backend.Error!void {
@@ -98,7 +98,7 @@ fn removeImpl(ptr: *anyopaque, fd: std.posix.fd_t) Backend.Error!void {
 
     if (idx < self.fds.items.len) {
         const moved_fd = self.fds.items[idx].fd;
-        try self.fd_map.put(moved_fd, idx);
+        try self.fd_map.put(self.allocator, moved_fd, idx);
     }
 }
 

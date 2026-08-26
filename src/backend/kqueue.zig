@@ -7,6 +7,8 @@
 const std = @import("std");
 const Backend = @import("../backend.zig");
 const builtin = @import("builtin");
+const sys = @import("../sys.zig");
+const posix = std.posix;
 
 const Kqueue = @This();
 
@@ -19,13 +21,13 @@ const Slot = struct {
 
 allocator: std.mem.Allocator,
 kq: std.posix.fd_t,
-slots: std.AutoHashMap(std.posix.fd_t, Slot),
+slots: std.AutoHashMapUnmanaged(std.posix.fd_t, Slot),
 dirty: std.ArrayList(std.posix.fd_t),
 changes: std.ArrayList(std.posix.system.Kevent),
 
 pub fn init(allocator: std.mem.Allocator, capacity: usize) !Backend {
-    const kq = try std.posix.kqueue();
-    errdefer std.posix.close(kq);
+    const kq = try open();
+    errdefer sys.close(kq);
 
     const self = try allocator.create(Kqueue);
     errdefer allocator.destroy(self);
@@ -33,16 +35,16 @@ pub fn init(allocator: std.mem.Allocator, capacity: usize) !Backend {
     self.* = .{
         .allocator = allocator,
         .kq = kq,
-        .slots = std.AutoHashMap(std.posix.fd_t, Slot).init(allocator),
-        .dirty = std.ArrayList(std.posix.fd_t){},
-        .changes = std.ArrayList(std.posix.system.Kevent){},
+        .slots = .empty,
+        .dirty = .empty,
+        .changes = .empty,
     };
     errdefer {
         self.changes.deinit(allocator);
         self.dirty.deinit(allocator);
-        self.slots.deinit();
+        self.slots.deinit(allocator);
     }
-    try self.slots.ensureTotalCapacity(@intCast(capacity));
+    try self.slots.ensureTotalCapacity(allocator, @intCast(capacity));
     try self.dirty.ensureTotalCapacity(allocator, capacity);
     try self.changes.ensureTotalCapacity(allocator, capacity * 2);
 
@@ -65,8 +67,8 @@ fn deinitImpl(ptr: *anyopaque) void {
     const self: *Kqueue = @ptrCast(@alignCast(ptr));
     self.changes.deinit(self.allocator);
     self.dirty.deinit(self.allocator);
-    self.slots.deinit();
-    std.posix.close(self.kq);
+    self.slots.deinit(self.allocator);
+    sys.close(self.kq);
     self.allocator.destroy(self);
 }
 
@@ -74,7 +76,7 @@ fn reifyImpl(_: *anyopaque) Backend.Error!void {}
 
 fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) Backend.Error!void {
     const self: *Kqueue = @ptrCast(@alignCast(ptr));
-    const gop = try self.slots.getOrPut(fd);
+    const gop = try self.slots.getOrPut(self.allocator, fd);
     if (!gop.found_existing) {
         gop.value_ptr.* = .{
             .wanted = interest,
@@ -130,15 +132,11 @@ fn waitImpl(ptr: *anyopaque, events: []Backend.Event, timeout_ns: ?u64) Backend.
     const self: *Kqueue = @ptrCast(@alignCast(ptr));
     try self.buildChanges();
 
-    const timeout: ?std.posix.timespec = if (timeout_ns) |ns| .{
-        .tv_sec = @intCast(ns / std.time.ns_per_s),
-        .tv_nsec = @intCast(ns % std.time.ns_per_s),
-    } else null;
-
+    const timeout = timeoutTimespec(timeout_ns);
     var kevents: [64]std.posix.system.Kevent = undefined;
     const max_events = @min(events.len, kevents.len);
 
-    const n = try std.posix.kevent(
+    const n = try waitEvents(
         self.kq,
         self.changes.items,
         kevents[0..max_events],
@@ -198,7 +196,15 @@ fn commitDirty(self: *Kqueue) void {
     self.dirty.clearRetainingCapacity();
 }
 
-fn commitSlot(slots: *std.AutoHashMap(std.posix.fd_t, Slot), fd: std.posix.fd_t) void {
+fn timeoutTimespec(timeout_ns: ?u64) ?std.posix.timespec {
+    const ns = timeout_ns orelse return null;
+    return .{
+        .sec = @intCast(ns / std.time.ns_per_s),
+        .nsec = @intCast(ns % std.time.ns_per_s),
+    };
+}
+
+fn commitSlot(slots: *std.AutoHashMapUnmanaged(std.posix.fd_t, Slot), fd: std.posix.fd_t) void {
     const slot = slots.getPtr(fd) orelse return;
     slot.dirty = false;
     slot.kernel = slot.wanted;
@@ -251,5 +257,53 @@ fn isKqueueSupported() bool {
         .macos, .ios, .tvos, .watchos, .visionos => true,
         .freebsd, .netbsd, .openbsd, .dragonfly => true,
         else => false,
+    };
+}
+
+fn open() !posix.fd_t {
+    const rc = posix.system.kqueue();
+    return switch (posix.errno(rc)) {
+        .SUCCESS => @intCast(rc),
+        .MFILE => error.ProcessFdQuotaExceeded,
+        .NFILE => error.SystemFdQuotaExceeded,
+        .NOMEM => error.SystemResources,
+        else => |err| posix.unexpectedErrno(err),
+    };
+}
+
+fn waitEvents(
+    kq: posix.fd_t,
+    changelist: []const posix.system.Kevent,
+    eventlist: []posix.system.Kevent,
+    timeout: ?*const posix.timespec,
+) !usize {
+    while (true) {
+        const count = try waitOnce(kq, changelist, eventlist, timeout);
+        if (count) |n| return n;
+    }
+}
+
+fn waitOnce(
+    kq: posix.fd_t,
+    changelist: []const posix.system.Kevent,
+    eventlist: []posix.system.Kevent,
+    timeout: ?*const posix.timespec,
+) !?usize {
+    const rc = posix.system.kevent(
+        kq,
+        changelist.ptr,
+        @intCast(changelist.len),
+        eventlist.ptr,
+        @intCast(eventlist.len),
+        timeout,
+    );
+    return switch (posix.errno(rc)) {
+        .SUCCESS => @as(usize, @intCast(rc)),
+        .INTR => null,
+        .ACCES => error.AccessDenied,
+        .NOENT => error.EventNotFound,
+        .NOMEM => error.SystemResources,
+        .SRCH => error.ProcessNotFound,
+        else => |err| posix.unexpectedErrno(err),
     };
 }

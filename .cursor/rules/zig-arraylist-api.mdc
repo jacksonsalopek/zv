@@ -4,5 +4,5 @@ alwaysApply: true
 ---
 # Overview
 
-- ArrayList API changed: Use `std.ArrayList(T)` and initialize with `std.ArrayList(T){}`
+- ArrayList API changed: Use `std.ArrayList(T)` and initialize with `.empty`
 - Do not use deprecated `init()` methods from older Zig versions

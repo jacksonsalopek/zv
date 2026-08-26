@@ -72,8 +72,8 @@ fn benchZvLoopInit(allocator: std.mem.Allocator) !Result {
 
 fn closePipes(pipes: [][2]std.posix.fd_t) void {
     for (pipes) |p| {
-        std.posix.close(p[0]);
-        std.posix.close(p[1]);
+        zv.sys.close(p[0]);
+        zv.sys.close(p[1]);
     }
 }
 
@@ -88,7 +88,7 @@ fn benchZvIo(allocator: std.mem.Allocator, n: usize) !Result {
     const watchers = try tracked.alloc(zv.io.Watcher, n);
     defer tracked.free(watchers);
 
-    for (pipes) |*p| p.* = try std.posix.pipe();
+    for (pipes) |*p| p.* = try zv.sys.pipe();
     defer closePipes(pipes);
 
     tracker.reset();
@@ -151,7 +151,7 @@ fn benchZvMixed(allocator: std.mem.Allocator, num_io: usize, num_timers: usize) 
     const timer_watchers = try tracked.alloc(zv.timer.Watcher, num_timers);
     defer tracked.free(timer_watchers);
 
-    for (pipes) |*p| p.* = try std.posix.pipe();
+    for (pipes) |*p| p.* = try zv.sys.pipe();
     defer closePipes(pipes);
 
     tracker.reset();

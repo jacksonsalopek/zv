@@ -5,45 +5,24 @@
 //! prove application-level throughput.
 
 const std = @import("std");
-const builtin = @import("builtin");
+const sys = @import("sys");
 
 pub const default_warmup: usize = 2;
 pub const default_samples: usize = 5;
 
-/// Monotonic timer via CLOCK_MONOTONIC. Wall-clock timestamps are not used.
+/// Monotonic timer. Same clock as `zv.time.now` (`sys.monotonicNs`).
 pub const Timer = struct {
     start_ns: u64,
 
     pub fn start() !Timer {
-        return .{ .start_ns = monotonicNs() };
+        return .{ .start_ns = sys.monotonicNs() };
     }
 
     pub fn read(self: *Timer) u64 {
-        const now = monotonicNs();
+        const now = sys.monotonicNs();
         return if (now > self.start_ns) now - self.start_ns else 0;
     }
 };
-
-fn monotonicNs() u64 {
-    if (builtin.os.tag != .linux) {
-        var ts: std.c.timespec = undefined;
-        if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return 0;
-        return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-    }
-    var ts: std.os.linux.timespec = undefined;
-    const rc = std.os.linux.clock_gettime(.MONOTONIC, &ts);
-    if (rc != 0) return 0;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
-
-fn sleepNs(ns: u64) void {
-    if (builtin.os.tag != .linux) return;
-    var req = std.os.linux.timespec{
-        .sec = @intCast(ns / std.time.ns_per_s),
-        .nsec = @intCast(ns % std.time.ns_per_s),
-    };
-    _ = std.os.linux.nanosleep(&req, null);
-}
 
 /// Prevent the compiler from deleting work whose result appears unused.
 pub fn keep(value: anytype) void {
@@ -336,7 +315,7 @@ pub fn printMethodology(writer: anytype) !void {
 test "Timer measures elapsed time" {
     const testing = std.testing;
     var timer = try Timer.start();
-    sleepNs(1_000_000);
+    sys.sleep(1_000_000);
     try testing.expect(timer.read() >= 1_000_000);
 }
 

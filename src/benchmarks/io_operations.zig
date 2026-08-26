@@ -49,8 +49,8 @@ pub fn run(allocator: std.mem.Allocator, writer: anytype) !void {
 
 fn closePipes(pipes: [][2]std.posix.fd_t) void {
     for (pipes) |p| {
-        std.posix.close(p[0]);
-        std.posix.close(p[1]);
+        zv.sys.close(p[0]);
+        zv.sys.close(p[1]);
     }
 }
 
@@ -60,7 +60,7 @@ fn openPipes(allocator: std.mem.Allocator, n: usize) ![][2]std.posix.fd_t {
     var opened: usize = 0;
     errdefer closeOpened(pipes, opened);
     for (pipes) |*p| {
-        p.* = try std.posix.pipe();
+        p.* = try zv.sys.pipe();
         opened += 1;
     }
     return pipes;
@@ -69,8 +69,8 @@ fn openPipes(allocator: std.mem.Allocator, n: usize) ![][2]std.posix.fd_t {
 fn closeOpened(pipes: [][2]std.posix.fd_t, opened: usize) void {
     var i: usize = 0;
     while (i < opened) : (i += 1) {
-        std.posix.close(pipes[i][0]);
-        std.posix.close(pipes[i][1]);
+        zv.sys.close(pipes[i][0]);
+        zv.sys.close(pipes[i][1]);
     }
 }
 

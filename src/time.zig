@@ -9,7 +9,7 @@ pub const Timestamp = u64;
 
 /// Get current monotonic time in nanoseconds
 pub fn now() Timestamp {
-    return @intCast(std.time.nanoTimestamp());
+    return @import("sys.zig").monotonicNs();
 }
 
 /// Convert seconds to nanoseconds

@@ -26,7 +26,7 @@ fn announceBackend(writer: anytype) !void {
     const kind = zv.Backend.selectBest();
     // select wait() always returns 0; that is not a libev comparison.
     if (kind == .select) return error.SelectBackendUnimplemented;
-    try writer.print("zv backend: {s} (not select; select wait is a stub)\n", .{@tagName(kind)});
+    try writer.print("zv backend: {t} (not select; select wait is a stub)\n", .{kind});
 }
 
 pub fn runAll(allocator: std.mem.Allocator, writer: anytype) !void {

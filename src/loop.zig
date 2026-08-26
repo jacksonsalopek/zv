@@ -15,6 +15,7 @@ const PrepareWatcher = @import("watcher/prepare.zig").Watcher;
 const CheckWatcher = @import("watcher/check.zig").Watcher;
 const TimerHeap = @import("timer_heap.zig").TimerHeap;
 const Waker = @import("waker.zig").Waker;
+const sys = @import("sys.zig");
 
 const Loop = @This();
 const is_single_threaded = @import("builtin").single_threaded;
@@ -46,7 +47,7 @@ pub const BreakHow = enum(u8) {
 allocator: std.mem.Allocator,
 backend: Backend,
 event_buffer: []Backend.Event,
-mutex: if (is_single_threaded) void else std.Thread.Mutex,
+mutex: if (is_single_threaded) void else sys.Mutex,
 running: std.atomic.Value(bool),
 iteration: u64,
 now_cache: std.atomic.Value(time.Timestamp),
@@ -87,8 +88,8 @@ pub fn init(allocator: std.mem.Allocator, options: Options) !*Loop {
         .waker = waker,
         .waker_io = undefined,
         .timer_heap = TimerHeap.init(allocator),
-        .prepare_list = std.ArrayList(*PrepareWatcher){},
-        .check_list = std.ArrayList(*CheckWatcher){},
+        .prepare_list = .empty,
+        .check_list = .empty,
         .pending_count = 0,
     };
     errdefer loop.timer_heap.deinit();
@@ -364,7 +365,7 @@ test "loop init and deinit" {
     defer loop.destroy();
 
     try testing.expect(!loop.running.load(.acquire));
-    try testing.expectEqual(@as(u64, 0), loop.iteration);
+    try testing.expectEqual(0, loop.iteration);
 }
 
 test "loop time management" {
@@ -400,7 +401,7 @@ test "loop wakeup from another thread" {
 
     const WakerThread = struct {
         fn run(l: *Loop) void {
-            std.Thread.sleep(20 * std.time.ns_per_ms);
+            sys.sleep(20 * std.time.ns_per_ms);
             l.wakeup() catch unreachable;
             TestState.woken_up.store(true, .release);
         }
@@ -409,9 +410,9 @@ test "loop wakeup from another thread" {
     const thread = try std.Thread.spawn(.{}, WakerThread.run, .{loop});
     defer thread.join();
 
-    const start = std.time.nanoTimestamp();
+    const start = time.now();
     try loop.run(.once);
-    const elapsed = std.time.nanoTimestamp() - start;
+    const elapsed = time.now() - start;
 
     try testing.expect(TestState.woken_up.load(.acquire));
     try testing.expect(elapsed < time.seconds(10));
@@ -488,7 +489,7 @@ test "requestBreak from another thread" {
 
     const Breaker = struct {
         fn run(l: *Loop) void {
-            std.Thread.sleep(20 * std.time.ns_per_ms);
+            sys.sleep(20 * std.time.ns_per_ms);
             l.requestBreak(.one);
         }
     };
@@ -496,9 +497,9 @@ test "requestBreak from another thread" {
     const thread = try std.Thread.spawn(.{}, Breaker.run, .{loop});
     defer thread.join();
 
-    const start = std.time.nanoTimestamp();
+    const start = time.now();
     try loop.run(.until_done);
-    const elapsed = std.time.nanoTimestamp() - start;
+    const elapsed = time.now() - start;
 
     try testing.expect(elapsed < time.seconds(10));
 }
@@ -596,7 +597,7 @@ test "timer again from callback does not double-insert" {
 
     try loop.run(.until_done);
     try testing.expect(State.fires >= 2);
-    try testing.expectEqual(@as(usize, 1), loop.timer_heap.count());
+    try testing.expectEqual(1, loop.timer_heap.count());
 }
 
 test "now is readable from another thread" {

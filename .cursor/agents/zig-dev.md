@@ -65,7 +65,7 @@ You have access to the Task tool with specialized subagent types. Use them proac
 ## API Usage
 
 ### ArrayList
-- Use `std.ArrayList(T)` and initialize with `std.ArrayList(T){}`
+- Use `std.ArrayList(T)` and initialize with `.empty`
 - Do not use deprecated `init()` methods from older Zig versions
 
 ### C Interop

@@ -27,6 +27,7 @@ const std = @import("std");
 pub const Loop = @import("loop.zig");
 pub const Backend = @import("backend.zig");
 pub const time = @import("time.zig");
+pub const sys = @import("sys.zig");
 
 pub const io = struct {
     pub const Watcher = @import("watcher/io.zig").Watcher;

@@ -64,4 +64,4 @@ A handler already in flight may still `write` a closing fd (`EBADF` / ignored). 
 - `wakeup` / `requestBreak` after `deinit` (write to closed fd).
 - In-flight signal write vs `stop` close (fd reuse).
 - `poll` / `select` backends are not safe for concurrent `add` and `wait`.
-- Zig `posix.write` on non-Linux in a signal handler is a thin wrapper; Linux uses the raw syscall.
+- Signal-handler writes go through `sys.write` (`posix.system.write`), which is async-signal-safe.

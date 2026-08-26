@@ -39,6 +39,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    bench_infra_mod.addImport("sys", b.createModule(.{
+        .root_source_file = b.path("src/sys.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
     const bench_infra_tests = b.addTest(.{ .root_module = bench_infra_mod });
     const run_bench_infra_tests = b.addRunArtifact(bench_infra_tests);
 
@@ -74,6 +79,11 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
     });
     benchmark_mod.addImport("zv", bench_zv);
+    benchmark_mod.addImport("sys", b.createModule(.{
+        .root_source_file = b.path("src/sys.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    }));
 
     benchmark_mod.addIncludePath(b.path("src/benchmarks"));
     benchmark_mod.addCSourceFile(.{

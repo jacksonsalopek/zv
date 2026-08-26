@@ -2,7 +2,7 @@
 
 A Zig port of a **subset** of [libev](http://software.schmorp.de/pkg/libev.html) with Zig allocators and error unions. zv is a library (not an executable) for asynchronous I/O on POSIX systems.
 
-Requires **Zig 0.15.2** or later.
+Requires **Zig 0.16.0** or later.
 
 ## Documentation
 
@@ -29,7 +29,7 @@ Examples are not wired into `zig build`; copy from `examples/` or import the `zv
 
 ## Installation
 
-Requires Zig 0.15.2+. From your project:
+Requires Zig 0.16.0+. From your project:
 
 ```bash
 zig fetch --save git+https://github.com/jacksonsalopek/zv
@@ -53,10 +53,8 @@ exe.root_module.addImport("zv", zv.module("zv"));
 const std = @import("std");
 const zv = @import("zv");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     const loop = try zv.Loop.init(allocator, .{});
     defer loop.destroy();

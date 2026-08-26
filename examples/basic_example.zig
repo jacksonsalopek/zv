@@ -5,13 +5,15 @@
 const std = @import("std");
 const zv = @import("zv");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
-    std.debug.print("zv Event Loop Example\n", .{});
-    std.debug.print("Backend: {s}\n\n", .{@tagName(zv.Backend.selectBest())});
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    try stdout.print("zv Event Loop Example\n", .{});
+    try stdout.print("Backend: {t}\n\n", .{zv.Backend.selectBest()});
 
     const loop = try zv.Loop.init(allocator, .{});
     defer loop.destroy();
@@ -25,20 +27,21 @@ pub fn main() !void {
     try timer.start();
     defer timer.stop();
 
-    std.debug.print("Starting event loop...\n", .{});
-    std.debug.print("Timer will fire every second.\n", .{});
-    std.debug.print("Press Ctrl+C to exit.\n\n", .{});
+    try stdout.print("Starting event loop...\n", .{});
+    try stdout.print("Timer will fire every second.\n", .{});
+    try stdout.print("Press Ctrl+C to exit.\n\n", .{});
+    try stdout.flush();
 
     var count: usize = 0;
     while (count < 5) : (count += 1) {
         try loop.run(.once);
     }
 
-    std.debug.print("\nEvent loop example complete!\n", .{});
+    try stdout.print("\nEvent loop example complete!\n", .{});
+    try stdout.flush();
 }
 
 fn timerCallback(watcher: *zv.timer.Watcher) void {
     _ = watcher;
-    const timestamp = std.time.timestamp();
-    std.debug.print("[{}] Timer fired!\n", .{timestamp});
+    std.debug.print("[{}] Timer fired!\n", .{zv.time.now()});
 }

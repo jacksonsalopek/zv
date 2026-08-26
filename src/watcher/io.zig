@@ -12,6 +12,7 @@
 const std = @import("std");
 const Loop = @import("../loop.zig");
 const Backend = @import("../backend.zig");
+const sys = @import("../sys.zig");
 
 pub const Event = enum {
     read,
@@ -115,10 +116,10 @@ test "io watcher start registers with loop" {
         }
     };
 
-    const fds = try std.posix.pipe();
+    const fds = try sys.pipe();
     defer {
-        std.posix.close(fds[0]);
-        std.posix.close(fds[1]);
+        sys.close(fds[0]);
+        sys.close(fds[1]);
     }
 
     var watcher = Watcher.init(loop, fds[0], .read, DummyCallback.callback);
@@ -152,17 +153,17 @@ test "io watcher keeps until_done running" {
     const loop = try Loop.init(testing.allocator, .{});
     defer loop.destroy();
 
-    const fds = try std.posix.pipe();
+    const fds = try sys.pipe();
     defer {
-        std.posix.close(fds[0]);
-        std.posix.close(fds[1]);
+        sys.close(fds[0]);
+        sys.close(fds[1]);
     }
 
     var watcher = Watcher.init(loop, fds[0], .read, TestState.callback);
     try watcher.start();
     defer watcher.stop() catch {};
 
-    _ = try std.posix.write(fds[1], "x");
+    _ = try sys.write(fds[1], "x");
     try loop.run(.until_done);
 
     try testing.expect(TestState.fired);
@@ -184,10 +185,10 @@ test "io watcher modify preserves callback" {
     const loop = try Loop.init(testing.allocator, .{});
     defer loop.destroy();
 
-    const fds = try std.posix.pipe();
+    const fds = try sys.pipe();
     defer {
-        std.posix.close(fds[0]);
-        std.posix.close(fds[1]);
+        sys.close(fds[0]);
+        sys.close(fds[1]);
     }
 
     var watcher = Watcher.init(loop, fds[1], .read, TestState.callback);
@@ -224,7 +225,7 @@ test "io N starts then nowait arms" {
     var opened: usize = 0;
     errdefer closeOpenedPipes(pipes[0..opened]);
     for (&pipes) |*p| {
-        p.* = try std.posix.pipe();
+        p.* = try sys.pipe();
         opened += 1;
     }
     defer closeOpenedPipes(pipes[0..opened]);
@@ -237,7 +238,7 @@ test "io N starts then nowait arms" {
     defer stopWatchers(&watchers);
 
     for (pipes) |p| {
-        _ = try std.posix.write(p[1], "x");
+        _ = try sys.write(p[1], "x");
     }
     try loop.run(.nowait);
     try testing.expectEqual(@as(usize, n), TestState.fired);
@@ -260,17 +261,17 @@ test "io start then stop before run coalesces" {
     const loop = try Loop.init(testing.allocator, .{});
     defer loop.destroy();
 
-    const fds = try std.posix.pipe();
+    const fds = try sys.pipe();
     defer {
-        std.posix.close(fds[0]);
-        std.posix.close(fds[1]);
+        sys.close(fds[0]);
+        sys.close(fds[1]);
     }
 
     var watcher = Watcher.init(loop, fds[0], .read, TestState.callback);
     try watcher.start();
     try watcher.stop();
 
-    _ = try std.posix.write(fds[1], "x");
+    _ = try sys.write(fds[1], "x");
     try loop.run(.nowait);
 
     try testing.expect(!TestState.fired);
@@ -293,10 +294,10 @@ test "io modify before first wait applies" {
     const loop = try Loop.init(testing.allocator, .{});
     defer loop.destroy();
 
-    const fds = try std.posix.pipe();
+    const fds = try sys.pipe();
     defer {
-        std.posix.close(fds[0]);
-        std.posix.close(fds[1]);
+        sys.close(fds[0]);
+        sys.close(fds[1]);
     }
 
     var watcher = Watcher.init(loop, fds[1], .read, TestState.callback);
@@ -327,17 +328,17 @@ test "io until_done works with deferred register" {
     const loop = try Loop.init(testing.allocator, .{});
     defer loop.destroy();
 
-    const fds = try std.posix.pipe();
+    const fds = try sys.pipe();
     defer {
-        std.posix.close(fds[0]);
-        std.posix.close(fds[1]);
+        sys.close(fds[0]);
+        sys.close(fds[1]);
     }
 
     var watcher = Watcher.init(loop, fds[0], .read, TestState.callback);
     try watcher.start();
     defer watcher.stop() catch {};
 
-    _ = try std.posix.write(fds[1], "x");
+    _ = try sys.write(fds[1], "x");
     try loop.run(.until_done);
     try testing.expect(TestState.fired);
     try testing.expectEqual(@as(usize, 0), loop.pending_count);
@@ -356,10 +357,10 @@ test "io duplicate fd fails at start" {
     const loop = try Loop.init(testing.allocator, .{});
     defer loop.destroy();
 
-    const fds = try std.posix.pipe();
+    const fds = try sys.pipe();
     defer {
-        std.posix.close(fds[0]);
-        std.posix.close(fds[1]);
+        sys.close(fds[0]);
+        sys.close(fds[1]);
     }
 
     var first = Watcher.init(loop, fds[0], .read, Dummy.callback);
@@ -385,9 +386,9 @@ test "io kernel register error surfaces in run" {
     const loop = try Loop.init(testing.allocator, .{});
     defer loop.destroy();
 
-    const fds = try std.posix.pipe();
-    std.posix.close(fds[0]);
-    std.posix.close(fds[1]);
+    const fds = try sys.pipe();
+    sys.close(fds[0]);
+    sys.close(fds[1]);
 
     var watcher = Watcher.init(loop, fds[0], .read, Dummy.callback);
     try watcher.start();
@@ -398,8 +399,8 @@ test "io kernel register error surfaces in run" {
 
 fn closeOpenedPipes(pipes: [][2]std.posix.fd_t) void {
     for (pipes) |p| {
-        std.posix.close(p[0]);
-        std.posix.close(p[1]);
+        sys.close(p[0]);
+        sys.close(p[1]);
     }
 }
 

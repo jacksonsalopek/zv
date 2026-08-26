@@ -15,6 +15,7 @@ zv/
 │   ├── loop.zig              # Loop, run modes, wakeup
 │   ├── backend.zig           # Backend vtable and selectBest()
 │   ├── time.zig              # Monotonic time helpers
+│   ├── sys.zig               # POSIX syscall wrappers (Zig 0.16)
 │   ├── timer_heap.zig        # Intrusive min-heap (internal)
 │   ├── waker.zig             # Cross-thread wakeup (internal)
 │   ├── backend/
@@ -44,6 +45,7 @@ Exported from `@import("zv")`:
 | `Loop` | Event loop (`init` returns `*Loop`) |
 | `Backend` | Kind, `Event`/`EventMask`/`Interest`, `selectBest()`, `init` |
 | `time` | `Timestamp`, `now`, `seconds`/`milliseconds`/`microseconds`, `diff` |
+| `sys` | POSIX helpers (`pipe`, `close`, `read`, `write`) after Zig 0.16 |
 | `io.Watcher`, `io.Event` | FD watchers (`.read` / `.write` / `.both`) |
 | `timer.Watcher` | One-shot or repeating timers |
 | `signal.Watcher` | Unix signals (self-pipe + `sigaction`) |
@@ -145,7 +147,7 @@ Callbacks take only `*Watcher`. They run every iteration that reaches poll (prep
 
 ## Time
 
-`time.Timestamp` is `u64` nanoseconds. `now()` casts `std.time.nanoTimestamp()` to `u64` (overflow ~year 2554). `diff` treats wraparound as unsigned distance.
+`time.Timestamp` is `u64` nanoseconds. `now()` reads `CLOCK_MONOTONIC`. `diff` treats wraparound as unsigned distance.
 
 ## Thread safety
 

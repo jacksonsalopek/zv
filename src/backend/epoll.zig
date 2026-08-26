@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const Backend = @import("../backend.zig");
+const sys = @import("../sys.zig");
 const linux = std.os.linux;
 
 const Epoll = @This();
@@ -20,12 +21,12 @@ const Slot = struct {
 
 allocator: std.mem.Allocator,
 epoll_fd: std.posix.fd_t,
-slots: std.AutoHashMap(std.posix.fd_t, Slot),
+slots: std.AutoHashMapUnmanaged(std.posix.fd_t, Slot),
 dirty: std.ArrayList(std.posix.fd_t),
 
 pub fn init(allocator: std.mem.Allocator, capacity: usize) !Backend {
-    const epoll_fd = try std.posix.epoll_create1(linux.EPOLL.CLOEXEC);
-    errdefer std.posix.close(epoll_fd);
+    const epoll_fd = try sys.epollCreate1(linux.EPOLL.CLOEXEC);
+    errdefer sys.close(epoll_fd);
 
     const self = try allocator.create(Epoll);
     errdefer allocator.destroy(self);
@@ -33,14 +34,14 @@ pub fn init(allocator: std.mem.Allocator, capacity: usize) !Backend {
     self.* = .{
         .allocator = allocator,
         .epoll_fd = epoll_fd,
-        .slots = std.AutoHashMap(std.posix.fd_t, Slot).init(allocator),
-        .dirty = std.ArrayList(std.posix.fd_t){},
+        .slots = .empty,
+        .dirty = .empty,
     };
     errdefer {
         self.dirty.deinit(allocator);
-        self.slots.deinit();
+        self.slots.deinit(allocator);
     }
-    try self.slots.ensureTotalCapacity(@intCast(capacity));
+    try self.slots.ensureTotalCapacity(allocator, @intCast(capacity));
     try self.dirty.ensureTotalCapacity(allocator, capacity);
 
     return Backend{
@@ -61,14 +62,14 @@ const vtable = Backend.VTable{
 fn deinitImpl(ptr: *anyopaque) void {
     const self: *Epoll = @ptrCast(@alignCast(ptr));
     self.dirty.deinit(self.allocator);
-    self.slots.deinit();
-    std.posix.close(self.epoll_fd);
+    self.slots.deinit(self.allocator);
+    sys.close(self.epoll_fd);
     self.allocator.destroy(self);
 }
 
 fn addImpl(ptr: *anyopaque, fd: std.posix.fd_t, interest: Backend.Interest, user_data: ?*anyopaque) Backend.Error!void {
     const self: *Epoll = @ptrCast(@alignCast(ptr));
-    const gop = try self.slots.getOrPut(fd);
+    const gop = try self.slots.getOrPut(self.allocator, fd);
     if (!gop.found_existing) {
         gop.value_ptr.* = .{
             .wanted = true,
@@ -205,7 +206,7 @@ fn waitImpl(ptr: *anyopaque, events: []Backend.Event, timeout_ns: ?u64) Backend.
     var epoll_events: [64]linux.epoll_event = undefined;
     const max_events = @min(events.len, epoll_events.len);
 
-    const n = std.posix.epoll_wait(self.epoll_fd, epoll_events[0..max_events], timeout_ms);
+    const n = sys.epollWait(self.epoll_fd, epoll_events[0..max_events], timeout_ms);
 
     for (epoll_events[0..n], 0..) |epoll_event, i| {
         events[i] = .{
@@ -250,16 +251,16 @@ test "epoll reify arms after nowait" {
     const backend = try init(testing.allocator, 8);
     defer backend.deinit();
 
-    const fds = try std.posix.pipe();
+    const fds = try sys.pipe();
     defer {
-        std.posix.close(fds[0]);
-        std.posix.close(fds[1]);
+        sys.close(fds[0]);
+        sys.close(fds[1]);
     }
 
     var marker: u8 = 1;
     try backend.add(fds[0], .{ .read = true }, &marker);
     try backend.reify();
-    _ = try std.posix.write(fds[1], "x");
+    _ = try sys.write(fds[1], "x");
 
     var events: [4]Backend.Event = undefined;
     const n = try backend.wait(&events, 0);
@@ -275,17 +276,17 @@ test "epoll start then stop before reify coalesces" {
     const backend = try init(testing.allocator, 8);
     defer backend.deinit();
 
-    const fds = try std.posix.pipe();
+    const fds = try sys.pipe();
     defer {
-        std.posix.close(fds[0]);
-        std.posix.close(fds[1]);
+        sys.close(fds[0]);
+        sys.close(fds[1]);
     }
 
     var marker: u8 = 1;
     try backend.add(fds[0], .{ .read = true }, &marker);
     try backend.remove(fds[0]);
     try backend.reify();
-    _ = try std.posix.write(fds[1], "x");
+    _ = try sys.write(fds[1], "x");
 
     var events: [4]Backend.Event = undefined;
     const n = try backend.wait(&events, 0);
@@ -299,10 +300,10 @@ test "epoll modify before reify applies" {
     const backend = try init(testing.allocator, 8);
     defer backend.deinit();
 
-    const fds = try std.posix.pipe();
+    const fds = try sys.pipe();
     defer {
-        std.posix.close(fds[0]);
-        std.posix.close(fds[1]);
+        sys.close(fds[0]);
+        sys.close(fds[1]);
     }
 
     var marker: u8 = 1;
@@ -323,10 +324,10 @@ test "epoll duplicate add fails at start" {
     const backend = try init(testing.allocator, 8);
     defer backend.deinit();
 
-    const fds = try std.posix.pipe();
+    const fds = try sys.pipe();
     defer {
-        std.posix.close(fds[0]);
-        std.posix.close(fds[1]);
+        sys.close(fds[0]);
+        sys.close(fds[1]);
     }
 
     try backend.add(fds[0], .{ .read = true }, null);
@@ -340,9 +341,9 @@ test "epoll closed fd error surfaces at reify" {
     const backend = try init(testing.allocator, 8);
     defer backend.deinit();
 
-    const fds = try std.posix.pipe();
-    std.posix.close(fds[0]);
-    std.posix.close(fds[1]);
+    const fds = try sys.pipe();
+    sys.close(fds[0]);
+    sys.close(fds[1]);
 
     try backend.add(fds[0], .{ .read = true }, null);
     try testing.expectError(error.BadFileDescriptor, backend.reify());

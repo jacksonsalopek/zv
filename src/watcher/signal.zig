@@ -12,6 +12,7 @@ const IoWatcher = @import("io.zig").Watcher;
 const Backend = @import("../backend.zig");
 const builtin = @import("builtin");
 const posix = std.posix;
+const sys = @import("../sys.zig");
 
 /// Called from the event loop with the delivered signal number.
 pub const Callback = *const fn (watcher: *Watcher, signum: c_int) void;
@@ -24,7 +25,7 @@ var signal_write_fds: [NSIG]std.atomic.Value(i32) = [_]std.atomic.Value(i32){std
 
 pub const Watcher = struct {
     loop: *Loop,
-    signum: c_int,
+    signum: posix.SIG,
     callback: Callback,
     active: bool,
     pipe_fds: ?struct {
@@ -37,7 +38,7 @@ pub const Watcher = struct {
     /// Create an inactive watcher for `signum`.
     pub fn init(
         loop: *Loop,
-        signum: c_int,
+        signum: posix.SIG,
         callback: Callback,
     ) Watcher {
         return .{
@@ -55,9 +56,10 @@ pub const Watcher = struct {
     pub fn start(self: *Watcher) !void {
         if (builtin.os.tag == .windows) return error.UnsupportedOnWindows;
         if (self.active) return;
-        if (self.signum < 0 or self.signum >= NSIG) return error.InvalidSignal;
+        const raw = signumInt(self.signum);
+        if (raw < 0 or raw >= NSIG) return error.InvalidSignal;
 
-        const index: usize = @intCast(self.signum);
+        const index: usize = @intCast(raw);
         if (signal_registry[index].load(.acquire) != null) return error.SignalAlreadyWatched;
 
         try self.install(index);
@@ -90,17 +92,16 @@ pub const Watcher = struct {
         try self.io_watcher.?.start();
         errdefer self.io_watcher.?.stop() catch {};
 
-        const old_action = try registerSignalHandler(self.signum);
-        self.old_action = old_action;
+        self.old_action = registerSignalHandler(self.signum);
     }
 
     fn uninstall(self: *Watcher) void {
-        const index: usize = @intCast(self.signum);
+        const index: usize = @intCast(signumInt(self.signum));
         signal_write_fds[index].store(invalid_fd, .release);
         signal_registry[index].store(null, .release);
 
         if (self.old_action) |old_action| {
-            posix.sigaction(self.signum, &old_action, null) catch {};
+            posix.sigaction(self.signum, &old_action, null);
             self.old_action = null;
         }
 
@@ -110,8 +111,8 @@ pub const Watcher = struct {
         }
 
         if (self.pipe_fds) |fds| {
-            posix.close(fds.read);
-            posix.close(fds.write);
+            sys.close(fds.read);
+            sys.close(fds.write);
             self.pipe_fds = null;
         }
     }
@@ -142,56 +143,44 @@ fn dispatchSignal(signum: c_int) void {
     watcher.callback(watcher, signum);
 }
 
+fn signumInt(sig: posix.SIG) c_int {
+    return @intCast(@intFromEnum(sig));
+}
+
 fn openSignalPipe() ![2]posix.fd_t {
-    if (@hasDecl(posix, "pipe2")) {
-        return posix.pipe2(.{ .CLOEXEC = true, .NONBLOCK = true });
-    }
-    const fds = try posix.pipe();
-    errdefer closePipe(fds);
-    try setNonBlocking(fds[0]);
-    try setNonBlocking(fds[1]);
-    return fds;
+    return sys.pipe2(.{ .CLOEXEC = true, .NONBLOCK = true });
 }
 
 fn closePipe(fds: [2]posix.fd_t) void {
-    posix.close(fds[0]);
-    posix.close(fds[1]);
-}
-
-fn setNonBlocking(fd: posix.fd_t) !void {
-    const flags = try posix.fcntl(fd, posix.F.GETFL, 0);
-    _ = try posix.fcntl(fd, posix.F.SETFL, flags | @as(u32, posix.O.NONBLOCK));
+    sys.close(fds[0]);
+    sys.close(fds[1]);
 }
 
 fn writeSignal(fd: i32, buf: []const u8) void {
-    if (builtin.os.tag == .linux) {
-        _ = std.os.linux.write(fd, buf.ptr, buf.len);
-        return;
-    }
-    _ = posix.write(fd, buf) catch {};
+    _ = sys.write(fd, buf) catch {};
 }
 
-fn registerSignalHandler(signum: c_int) !posix.Sigaction {
+fn registerSignalHandler(signum: posix.SIG) posix.Sigaction {
     var new_action = posix.Sigaction{
         .handler = .{ .handler = signalHandlerTrampoline },
-        .mask = posix.empty_sigset,
+        .mask = posix.sigemptyset(),
         .flags = posix.SA.RESTART,
     };
 
     var old_action: posix.Sigaction = undefined;
-    try posix.sigaction(signum, &new_action, &old_action);
-    
+    posix.sigaction(signum, &new_action, &old_action);
     return old_action;
 }
 
-fn signalHandlerTrampoline(sig: c_int) callconv(.c) void {
-    if (sig < 0 or sig >= NSIG) return;
+fn signalHandlerTrampoline(sig: posix.SIG) callconv(.c) void {
+    const raw = signumInt(sig);
+    if (raw < 0 or raw >= NSIG) return;
 
-    const index: usize = @intCast(sig);
+    const index: usize = @intCast(raw);
     const fd = signal_write_fds[index].load(.acquire);
     if (fd < 0) return;
 
-    const sig_byte: [1]u8 = .{@intCast(sig)};
+    const sig_byte: [1]u8 = .{@intCast(raw)};
     writeSignal(fd, &sig_byte);
 }
 
@@ -284,7 +273,7 @@ test "signal watcher receives signal" {
     try loop.run(.once);
 
     try testing.expect(TestContext.received);
-    try testing.expectEqual(SIGUSR1, TestContext.signum_received);
+    try testing.expectEqual(signumInt(SIGUSR1), TestContext.signum_received);
 }
 
 test "signal watcher prevents duplicate registration" {
@@ -334,7 +323,7 @@ test "signal watcher restores previous handler" {
     const SIGUSR1 = posix.SIG.USR1;
 
     var original_action: posix.Sigaction = undefined;
-    try posix.sigaction(SIGUSR1, null, &original_action);
+    posix.sigaction(SIGUSR1, null, &original_action);
 
     var watcher = Watcher.init(loop, SIGUSR1, DummyCallback.callback);
     try watcher.start();
@@ -343,7 +332,7 @@ test "signal watcher restores previous handler" {
     watcher.stop();
 
     var current_action: posix.Sigaction = undefined;
-    try posix.sigaction(SIGUSR1, null, &current_action);
+    posix.sigaction(SIGUSR1, null, &current_action);
 
     try testing.expectEqual(original_action.handler.handler, current_action.handler.handler);
 }

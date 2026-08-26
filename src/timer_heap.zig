@@ -13,7 +13,7 @@ pub const TimerHeap = struct {
     /// Create an empty heap.
     pub fn init(allocator: std.mem.Allocator) TimerHeap {
         return .{
-            .items = std.ArrayList(*TimerWatcher){},
+            .items = .empty,
             .allocator = allocator,
         };
     }

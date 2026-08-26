@@ -77,8 +77,8 @@ fn canOpenPipes(n: usize) bool {
 
 fn closePipes(pipes: [][2]std.posix.fd_t) void {
     for (pipes) |p| {
-        std.posix.close(p[0]);
-        std.posix.close(p[1]);
+        zv.sys.close(p[0]);
+        zv.sys.close(p[1]);
     }
 }
 
@@ -133,7 +133,7 @@ fn benchZvIo(allocator: std.mem.Allocator, scale: Scale) !u64 {
     defer loop.destroy();
     const pipes = try allocator.alloc([2]std.posix.fd_t, scale.n);
     defer allocator.free(pipes);
-    for (pipes) |*p| p.* = try std.posix.pipe();
+    for (pipes) |*p| p.* = try zv.sys.pipe();
     defer closePipes(pipes);
 
     const watchers = try allocator.alloc(zv.io.Watcher, scale.n);
@@ -158,7 +158,7 @@ fn benchLibevIo(allocator: std.mem.Allocator, scale: Scale) !u64 {
     defer c.libev_loop_destroy(loop);
     const pipes = try allocator.alloc([2]std.posix.fd_t, scale.n);
     defer allocator.free(pipes);
-    for (pipes) |*p| p.* = try std.posix.pipe();
+    for (pipes) |*p| p.* = try zv.sys.pipe();
     defer closePipes(pipes);
 
     const storage = c.libev_io_alloc_array(scale.n) orelse return error.WatcherCreationFailed;

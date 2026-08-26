@@ -3,16 +3,15 @@
 const std = @import("std");
 const benchmarks = @import("root.zig");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     // libc malloc on both sides so GPA overhead is not counted as "event loop".
     const allocator = std.heap.c_allocator;
 
     var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
+    var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.skip();
 
     var benchmark_name: ?[]const u8 = null;

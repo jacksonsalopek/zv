@@ -6,28 +6,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
-
-/// File-status bit for `O_NONBLOCK`. Prefer the packed-struct field or named
-/// constant from `posix.O`; fall back to the well-known POSIX values only when
-/// the target headers omit the name.
-const o_nonblock: u32 = if (@hasField(posix.O, "NONBLOCK"))
-    @as(u32, 1) << @bitOffsetOf(posix.O, "NONBLOCK")
-else if (@hasDecl(posix.O, "NONBLOCK"))
-    @intCast(posix.O.NONBLOCK)
-else if (builtin.os.tag == .linux)
-    0o4000 // Linux O_NONBLOCK (bit 11)
-else
-    0x800; // BSD/Solaris O_NONBLOCK when the name is missing
-
-/// Descriptor flag for `FD_CLOEXEC`. Prefer `posix.FD_CLOEXEC` (or `posix.FD.CLOEXEC`);
-/// POSIX requires the value 1 when neither form exists.
-const fd_cloexec: u32 = blk: {
-    if (@hasDecl(posix, "FD_CLOEXEC")) break :blk posix.FD_CLOEXEC;
-    if (@hasDecl(posix, "FD")) {
-        if (@hasDecl(posix.FD, "CLOEXEC")) break :blk posix.FD.CLOEXEC;
-    }
-    break :blk 1;
-};
+const sys = @import("sys.zig");
 
 pub const Waker = struct {
     read_fd: posix.fd_t,
@@ -44,9 +23,9 @@ pub const Waker = struct {
 
     /// Close the wakeup file descriptors.
     pub fn deinit(self: Waker) void {
-        posix.close(self.read_fd);
+        sys.close(self.read_fd);
         if (!self.is_eventfd) {
-            posix.close(self.write_fd);
+            sys.close(self.write_fd);
         }
     }
 
@@ -79,7 +58,7 @@ fn writeWake(fd: posix.fd_t, buf: []const u8) !void {
 }
 
 fn writeOnce(fd: posix.fd_t, buf: []const u8) !bool {
-    _ = posix.write(fd, buf) catch |err| {
+    _ = sys.write(fd, buf) catch |err| {
         if (err == error.Interrupted) return false;
         if (err == error.WouldBlock) return true;
         return err;
@@ -89,7 +68,7 @@ fn writeOnce(fd: posix.fd_t, buf: []const u8) !bool {
 
 fn initEventfd() !Waker {
     const linux = std.os.linux;
-    const fd = try posix.eventfd(0, linux.EFD.NONBLOCK | linux.EFD.CLOEXEC);
+    const fd = try sys.eventfd(0, linux.EFD.NONBLOCK | linux.EFD.CLOEXEC);
     return .{
         .read_fd = fd,
         .write_fd = fd,
@@ -98,41 +77,12 @@ fn initEventfd() !Waker {
 }
 
 fn initPipe() !Waker {
-    const fds = try openPipe();
+    const fds = try sys.pipe2(.{ .CLOEXEC = true, .NONBLOCK = true });
     return .{
         .read_fd = fds[0],
         .write_fd = fds[1],
         .is_eventfd = false,
     };
-}
-
-fn openPipe() ![2]posix.fd_t {
-    if (@hasDecl(posix, "pipe2")) {
-        return posix.pipe2(.{ .CLOEXEC = true, .NONBLOCK = true });
-    }
-    return openPipeFcntl();
-}
-
-fn openPipeFcntl() ![2]posix.fd_t {
-    const fds = try posix.pipe();
-    errdefer {
-        posix.close(fds[0]);
-        posix.close(fds[1]);
-    }
-    try setNonBlocking(fds[0]);
-    try setNonBlocking(fds[1]);
-    try setCloExec(fds[0]);
-    try setCloExec(fds[1]);
-    return fds;
-}
-
-fn setNonBlocking(fd: posix.fd_t) !void {
-    const flags = try posix.fcntl(fd, posix.F.GETFL, 0);
-    _ = try posix.fcntl(fd, posix.F.SETFL, flags | o_nonblock);
-}
-
-fn setCloExec(fd: posix.fd_t) !void {
-    _ = try posix.fcntl(fd, posix.F.SETFD, fd_cloexec);
 }
 
 test "waker init and deinit" {
